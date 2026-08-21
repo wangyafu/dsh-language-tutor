@@ -1,0 +1,5 @@
+# Mount the host plugin. Its dsh.client metadata adds the matching Web entry
+# when this patch is used with the DSH Web profile.
+- insert:
+    - id: language-tutor
+      name: dsh-language-tutor
