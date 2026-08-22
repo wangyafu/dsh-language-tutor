@@ -134,7 +134,8 @@ $DSH_HOME/state/dsh-language-tutor/settings.json
     context: false
     provider: deepseek-official
     model: deepseek-v4-flash
-    maxOutputTokens: 1200
+    reviewMaxOutputTokens: 1200
+    translationMaxOutputTokens: 4096
     timeoutMs: 30000
     retries: 1
     flashcardSessionLimit: 20
@@ -144,14 +145,17 @@ $DSH_HOME/state/dsh-language-tutor/settings.json
 
 `provider` 和 `model` 必须一起填写。已有的 `settings.json` 优先于这些初值，因此升级或重启不会覆盖你通过 `/lang` 做过的选择。
 
+检查与翻译使用独立的输出额度。旧配置项 `maxOutputTokens` 仍然兼容，会同时作为两者的额度；新配置应分别使用 `reviewMaxOutputTokens` 和 `translationMaxOutputTokens`。
+
 ## 一些具体行为
 
 - 少于 4 个有效文字单位、命令、代码围栏、符号过多或明显像代码的输入不会触发检查。
 - 一次写作检查最多处理 1500 个字符，最多返回 5 个错误、5 个词汇和 3 个语法点。
 - 自动翻译只处理至少 15 个文字单位且不含工具调用的最终回答。
-- 翻译最多读取 12000 个字符。5 行以内的代码块原样显示，更长的代码块在双语卡片里折叠为行数提示。
+- 翻译最多读取 12000 个字符，并把长段落拆分成约 3500 字符的批次。遇到输出截断时会继续拆小重试；带上下文翻译失败后会自动退回无上下文模式。
+- 5 行以内的代码块在双语卡片里原样显示，更长的代码块折叠为行数提示。
 - `check context` 和 `context on` 最多附带最近 8 条消息、约 4500 个字符；它们不会复制整段工具轨迹。
-- 辅助请求有独立超时和有限重试。失败只记入 DSH 日志，不会中断主对话。
+- 辅助请求有独立超时和有限重试。写作检查失败只记入 DSH 日志；翻译失败会更新当前卡片，但两者都不会中断主对话。
 
 ## 开发
 

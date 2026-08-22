@@ -69,8 +69,10 @@ export interface ReviewCard {
 export interface TranslationCard {
   readonly kind: 'translation'
   readonly native: string
+  readonly status?: 'loading' | 'done' | 'error'
   readonly segments?: readonly TranslationSegment[]
   readonly text?: string
+  readonly error?: string
 }
 
 export type FlashcardStage = 'question' | 'answer' | 'rated' | 'empty'

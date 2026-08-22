@@ -92,6 +92,16 @@ window.__ModuleLoader__.load({
     function TranslationCard(props) {
       var card = props.node.data
       var segments = Array.isArray(card.segments) ? card.segments : null
+      if (card.status === 'loading') {
+        return h('section', { style: CARD, className: 'dsh-language-tutor-translation' },
+          h('div', { style: TITLE }, h('span', null, '🌐 Translating…'), h(Pill, null, card.native)),
+          h('div', { style: MUTED }, 'Preparing a bilingual version of this response.'))
+      }
+      if (card.status === 'error') {
+        return h('section', { style: CARD, className: 'dsh-language-tutor-translation' },
+          h('div', { style: TITLE }, h('span', null, '🌐 Translation failed'), h(Pill, null, card.native)),
+          h('div', { style: { color: 'var(--dsw-alias-fg-danger, #c0392b)' } }, card.error || 'The auxiliary model request failed.'))
+      }
       return h('section', { style: CARD, className: 'dsh-language-tutor-translation' },
         h('div', { style: TITLE }, h('span', null, '🌐 Bilingual translation'), h(Pill, null, card.native)),
         segments

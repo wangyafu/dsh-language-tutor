@@ -24,6 +24,8 @@ import {
   parseSegmentTranslations,
   segmentMarkdown,
   shouldSkipCheck,
+  splitTranslationText,
+  TRANSLATION_BATCH_CHARS,
 } from './core.js'
 import { AuxiliaryLlmError, runAuxiliaryLlm } from './llm.js'
 import { FlashcardStore, isRetryGrade, Rating, SettingsStore } from './store.js'
@@ -33,6 +35,7 @@ import {
   type FlashcardEntry,
   type LanguageTutorCard,
   type ModelRoute,
+  type TranslationCard,
   type TutorSettings,
 } from './types.js'
 
@@ -54,7 +57,10 @@ export interface Config {
   readonly context?: boolean
   readonly provider?: string
   readonly model?: string
+  /** Legacy shared limit; the more specific limits take precedence. */
   readonly maxOutputTokens?: number
+  readonly reviewMaxOutputTokens?: number
+  readonly translationMaxOutputTokens?: number
   readonly timeoutMs?: number
   readonly retries?: number
   readonly flashcardSessionLimit?: number
@@ -72,7 +78,9 @@ export const Config: z<Config> = z.object({
   context: z.boolean().default(false),
   provider: z.string(),
   model: z.string(),
-  maxOutputTokens: z.number().step(1).min(128).default(1_200),
+  maxOutputTokens: z.number().step(1).min(128),
+  reviewMaxOutputTokens: z.number().step(1).min(128),
+  translationMaxOutputTokens: z.number().step(1).min(128),
   timeoutMs: z.number().step(1).min(1_000).default(30_000),
   retries: z.number().step(1).min(0).max(2).default(1),
   flashcardSessionLimit: z.number().step(1).min(1).default(20),
@@ -83,7 +91,8 @@ export const Config: z<Config> = z.object({
 interface ResolvedConfig {
   readonly dshHome?: string
   readonly initialSettings: TutorSettings
-  readonly maxOutputTokens: number
+  readonly reviewMaxOutputTokens: number
+  readonly translationMaxOutputTokens: number
   readonly timeoutMs: number
   readonly retries: number
   readonly flashcardSessionLimit: number
@@ -100,6 +109,11 @@ interface ReviewQueue {
   }
 }
 
+interface TranslationPiece {
+  readonly segmentIndex: number
+  readonly text: string
+}
+
 function integer(value: number | undefined, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
   return Number.isInteger(value) && value !== undefined
     ? Math.min(maximum, Math.max(minimum, value))
@@ -113,6 +127,9 @@ function resolveConfig(config: Config = {}): ResolvedConfig {
     throw new Error('dsh-language-tutor: provider and model must be supplied together and be non-empty')
   }
   const route = provider !== undefined && model !== undefined ? { provider, model } : undefined
+  const legacyMaxOutputTokens = config.maxOutputTokens === undefined
+    ? undefined
+    : integer(config.maxOutputTokens, 1_200, 128)
   return {
     ...config.dshHome === undefined ? {} : { dshHome: config.dshHome },
     initialSettings: normalizeSettings({
@@ -124,7 +141,16 @@ function resolveConfig(config: Config = {}): ResolvedConfig {
       context: config.context ?? DEFAULT_SETTINGS.context,
       ...route === undefined ? {} : { route },
     }),
-    maxOutputTokens: integer(config.maxOutputTokens, 1_200, 128),
+    reviewMaxOutputTokens: integer(
+      config.reviewMaxOutputTokens,
+      legacyMaxOutputTokens ?? 1_200,
+      128,
+    ),
+    translationMaxOutputTokens: integer(
+      config.translationMaxOutputTokens,
+      legacyMaxOutputTokens ?? 4_096,
+      128,
+    ),
     timeoutMs: integer(config.timeoutMs, 30_000, 1_000),
     retries: integer(config.retries, 1, 0, 2),
     flashcardSessionLimit: integer(config.flashcardSessionLimit, 20, 1),
@@ -233,6 +259,34 @@ function resultError(message: string): CommandResult {
   return { kind: 'error', text: message }
 }
 
+function translationPieces(prose: readonly string[]): TranslationPiece[] {
+  return prose.flatMap((text, segmentIndex) =>
+    splitTranslationText(text).map(piece => ({ segmentIndex, text: piece })))
+}
+
+function translationBatches(pieces: readonly TranslationPiece[]): TranslationPiece[][] {
+  const output: TranslationPiece[][] = []
+  let batch: TranslationPiece[] = []
+  let chars = 0
+  const flush = (): void => {
+    if (batch.length > 0) output.push(batch)
+    batch = []
+    chars = 0
+  }
+  for (const piece of pieces) {
+    if (batch.length > 0 && chars + piece.text.length > TRANSLATION_BATCH_CHARS) flush()
+    batch.push(piece)
+    chars += piece.text.length
+  }
+  flush()
+  return output
+}
+
+function translationTokenBudget(texts: readonly string[], maximum: number): number {
+  const chars = texts.reduce((total, text) => total + text.length, 0)
+  return Math.max(128, Math.min(maximum, Math.max(1_200, Math.ceil(chars * 1.4) + 384)))
+}
+
 function appendCard(session: Session, cardId: string, role: 'start' | 'update', card: LanguageTutorCard): number {
   return session.append(LANGUAGE_TUTOR_EVENT, { cardId, role, card }).seq
 }
@@ -273,13 +327,14 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     route: ModelRoute,
     prompt: string,
     sessionId: SessionId,
+    maxTokens: number,
     signal: AbortSignal = lifetime.signal,
   ): Promise<string> => runAuxiliaryLlm(ctx, {
     route,
     prompt,
     sessionId,
     signal,
-    maxTokens: config.maxOutputTokens,
+    maxTokens,
     timeoutMs: config.timeoutMs,
     retries: config.retries,
   })
@@ -299,7 +354,13 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     const route = current.route ?? { provider: proposed.provider, model: proposed.model }
     try {
       const context = current.check === 'context' ? contextExcerpt(agent.session, message.id) : undefined
-      const raw = await llmText(route, buildReviewPrompt(text, current, context), agent.id, controller.signal)
+      const raw = await llmText(
+        route,
+        buildReviewPrompt(text, current, context),
+        agent.id,
+        config.reviewMaxOutputTokens,
+        controller.signal,
+      )
       if (controller.signal.aborted) return
       const parsed = parseReviewResult(raw)
       if (parsed === undefined || parsed.mode === 'skip') return
@@ -360,21 +421,103 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     })()
     if (route === undefined) throw new Error('no model route is available; set one with /lang model <provider/model>')
     const clipped = source.text.slice(0, MAX_TRANSLATE_CHARS)
-    const context = current.context ? contextExcerpt(session, message.id) : undefined
-    const markdown = segmentMarkdown(clipped)
-    const prose = markdown.flatMap(segment => segment.kind === 'prose' ? [segment.text] : [])
-    let card: LanguageTutorCard | undefined
-    if (prose.length > 0) {
-      const raw = await llmText(route, buildSegmentTranslationPrompt(prose, current, context), session.id, signal)
-      const values = parseSegmentTranslations(raw, prose.length)
-      const segments = values === undefined ? undefined : assembleTranslationSegments(markdown, values)
-      if (segments !== undefined) card = { kind: 'translation', native: current.native, segments }
+    const cardId = `translation:${message.id}:${crypto.randomUUID()}`
+    appendCard(session, cardId, 'start', { kind: 'translation', native: current.native, status: 'loading' })
+
+    const translateTexts = async (texts: readonly string[], context?: string): Promise<string[]> => {
+      const budget = translationTokenBudget(texts, config.translationMaxOutputTokens)
+      let hitOutputLimit = false
+      try {
+        const raw = await llmText(
+          route,
+          buildSegmentTranslationPrompt(texts, current, context),
+          session.id,
+          budget,
+          signal,
+        )
+        const values = parseSegmentTranslations(raw, texts.length)
+        if (values !== undefined) return values
+      } catch (error) {
+        if (!(error instanceof AuxiliaryLlmError) || error.code !== 'MAX_TOKENS') throw error
+        hitOutputLimit = true
+      }
+
+      if (texts.length > 1) {
+        const middle = Math.ceil(texts.length / 2)
+        const left = await translateTexts(texts.slice(0, middle), context)
+        const right = await translateTexts(texts.slice(middle), context)
+        return [...left, ...right]
+      }
+
+      const text = texts[0] ?? ''
+      if (hitOutputLimit && text.length > 400) {
+        const parts = splitTranslationText(text, Math.max(200, Math.ceil(text.length / 2)))
+        if (parts.length > 1) return [(await translateTexts(parts, context)).join('\n\n')]
+      }
+
+      try {
+        return [await llmText(
+          route,
+          buildWholeTranslationPrompt(text, current, context),
+          session.id,
+          translationTokenBudget([text], config.translationMaxOutputTokens),
+          signal,
+        )]
+      } catch (error) {
+        if (!(error instanceof AuxiliaryLlmError) || error.code !== 'MAX_TOKENS' || text.length <= 400) throw error
+        const parts = splitTranslationText(text, Math.max(200, Math.ceil(text.length / 2)))
+        if (parts.length <= 1) throw error
+        return [(await translateTexts(parts, context)).join('\n\n')]
+      }
     }
-    if (card === undefined) {
-      const text = await llmText(route, buildWholeTranslationPrompt(clipped, current, context), session.id, signal)
-      card = { kind: 'translation', native: current.native, text }
+
+    const attempt = async (context?: string): Promise<TranslationCard> => {
+      const markdown = segmentMarkdown(clipped)
+      const prose = markdown.flatMap(segment => segment.kind === 'prose' ? [segment.text] : [])
+      if (prose.length > 0) {
+        const pieces = translationPieces(prose)
+        const translatedPieces: string[] = []
+        for (const batch of translationBatches(pieces)) {
+          translatedPieces.push(...await translateTexts(batch.map(piece => piece.text), context))
+        }
+        const bySegment = Array.from({ length: prose.length }, () => [] as string[])
+        pieces.forEach((piece, index) => bySegment[piece.segmentIndex]?.push(translatedPieces[index] ?? ''))
+        const translations = bySegment.map(parts => parts.join('\n\n'))
+        const segments = assembleTranslationSegments(markdown, translations)
+        if (segments !== undefined) {
+          return { kind: 'translation', native: current.native, status: 'done', segments }
+        }
+      }
+      const text = await llmText(
+        route,
+        buildWholeTranslationPrompt(clipped, current, context),
+        session.id,
+        config.translationMaxOutputTokens,
+        signal,
+      )
+      return { kind: 'translation', native: current.native, status: 'done', text }
     }
-    return appendCard(session, `translation:${message.id}:${crypto.randomUUID()}`, 'start', card)
+
+    try {
+      const context = current.context ? contextExcerpt(session, message.id) : undefined
+      let card: TranslationCard
+      try {
+        card = await attempt(context)
+      } catch (error) {
+        if (context === undefined || signal?.aborted === true) throw error
+        ctx.logger.warn(`dsh-language-tutor: contextual translation failed, retrying without context: ${safeError(error)}`)
+        card = await attempt(undefined)
+      }
+      return appendCard(session, cardId, 'update', card)
+    } catch (error) {
+      appendCard(session, cardId, 'update', {
+        kind: 'translation',
+        native: current.native,
+        status: 'error',
+        error: safeError(error),
+      })
+      throw error
+    }
   }
 
   ctx.on('session/event', (session, event) => {
@@ -586,6 +729,7 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
 export type { FlashcardEntry, TutorSettings } from './types.js'
 export {
   assembleTranslationSegments,
+  batchTranslationTexts,
   buildReviewPrompt,
   buildSegmentTranslationPrompt,
   buildWholeTranslationPrompt,
@@ -593,4 +737,5 @@ export {
   parseReviewResult,
   segmentMarkdown,
   shouldSkipCheck,
+  splitTranslationText,
 } from './core.js'

@@ -14,6 +14,7 @@ export const MAX_CHECK_CHARS = 1_500
 export const MAX_TRANSLATE_CHARS = 12_000
 export const SHORT_CODE_LINES = 5
 export const MIN_AUTO_UNITS = 15
+export const TRANSLATION_BATCH_CHARS = 3_500
 
 export const DEFAULT_SETTINGS: TutorSettings = Object.freeze({
   learning: 'en',
@@ -222,6 +223,56 @@ export function segmentMarkdown(source: string): MarkdownSegment[] {
   }
   if (inCode) output.push({ kind: 'code', text: code.join('\n'), lines: Math.max(0, code.length - 1) })
   flushProse()
+  return output
+}
+
+/** Split one long prose segment at a nearby paragraph, sentence, or word boundary. */
+export function splitTranslationText(source: string, maxChars = TRANSLATION_BATCH_CHARS): string[] {
+  const limit = Math.max(200, Math.floor(maxChars))
+  const output: string[] = []
+  let rest = source.trim()
+  while (rest.length > limit) {
+    const floor = Math.floor(limit * 0.55)
+    const window = rest.slice(0, limit + 1)
+    const candidates = [
+      window.lastIndexOf('\n\n'),
+      Math.max(...Array.from(window.matchAll(/[.!?。！？][\s\n]/gu), match => (match.index ?? -1) + 1), -1),
+      window.lastIndexOf('\n'),
+      window.lastIndexOf(' '),
+    ].filter(index => index >= floor)
+    const cut = candidates.length > 0 ? Math.max(...candidates) : limit
+    const part = rest.slice(0, cut).trim()
+    if (part.length === 0) break
+    output.push(part)
+    rest = rest.slice(cut).trim()
+  }
+  if (rest.length > 0) output.push(rest)
+  return output
+}
+
+/** Pack already-split prose pieces into bounded auxiliary translation calls. */
+export function batchTranslationTexts(
+  texts: readonly string[],
+  maxChars = TRANSLATION_BATCH_CHARS,
+): string[][] {
+  const limit = Math.max(200, Math.floor(maxChars))
+  const output: string[][] = []
+  let batch: string[] = []
+  let length = 0
+  const flush = (): void => {
+    if (batch.length > 0) output.push(batch)
+    batch = []
+    length = 0
+  }
+  for (const source of texts) {
+    for (const text of splitTranslationText(source, limit)) {
+      const nextLength = length + text.length
+      if (batch.length > 0 && nextLength > limit) flush()
+      batch.push(text)
+      length += text.length
+    }
+  }
+  flush()
   return output
 }
 

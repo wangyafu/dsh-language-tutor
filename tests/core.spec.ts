@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   assembleTranslationSegments,
+  batchTranslationTexts,
   buildReviewPrompt,
   contentUnits,
   normalizeSettings,
@@ -10,6 +11,7 @@ import {
   parseSegmentTranslations,
   segmentMarkdown,
   shouldSkipCheck,
+  splitTranslationText,
 } from '../src/core.js'
 
 describe('settings and prompt screening', () => {
@@ -69,6 +71,22 @@ describe('review response parsing', () => {
 })
 
 describe('bilingual segments', () => {
+  it('splits long prose near readable boundaries and packs bounded batches', () => {
+    const source = Array.from({ length: 12 }, (_, index) =>
+      `Sentence ${index + 1} explains one useful part of the translation batching behavior.`).join(' ')
+    const pieces = splitTranslationText(source, 220)
+    assert.ok(pieces.length > 1)
+    assert.ok(pieces.every(piece => piece.length <= 220))
+
+    const batches = batchTranslationTexts([
+      'A'.repeat(180),
+      'B'.repeat(180),
+      'C'.repeat(180),
+    ], 220)
+    assert.ok(batches.length >= 3)
+    assert.ok(batches.every(batch => batch.reduce((sum, text) => sum + text.length, 0) <= 220))
+  })
+
   it('keeps short code and replaces long code with a reference', () => {
     const source = [
       'First paragraph.',
