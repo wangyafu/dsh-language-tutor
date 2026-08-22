@@ -57,8 +57,6 @@ export interface Config {
   readonly context?: boolean
   readonly provider?: string
   readonly model?: string
-  /** Legacy shared limit; the more specific limits take precedence. */
-  readonly maxOutputTokens?: number
   readonly reviewMaxOutputTokens?: number
   readonly translationMaxOutputTokens?: number
   readonly timeoutMs?: number
@@ -78,9 +76,8 @@ export const Config: z<Config> = z.object({
   context: z.boolean().default(false),
   provider: z.string(),
   model: z.string(),
-  maxOutputTokens: z.number().step(1).min(128),
-  reviewMaxOutputTokens: z.number().step(1).min(128),
-  translationMaxOutputTokens: z.number().step(1).min(128),
+  reviewMaxOutputTokens: z.number().step(1).min(128).default(1_200),
+  translationMaxOutputTokens: z.number().step(1).min(128).default(4_096),
   timeoutMs: z.number().step(1).min(1_000).default(30_000),
   retries: z.number().step(1).min(0).max(2).default(1),
   flashcardSessionLimit: z.number().step(1).min(1).default(20),
@@ -127,9 +124,6 @@ function resolveConfig(config: Config = {}): ResolvedConfig {
     throw new Error('dsh-language-tutor: provider and model must be supplied together and be non-empty')
   }
   const route = provider !== undefined && model !== undefined ? { provider, model } : undefined
-  const legacyMaxOutputTokens = config.maxOutputTokens === undefined
-    ? undefined
-    : integer(config.maxOutputTokens, 1_200, 128)
   return {
     ...config.dshHome === undefined ? {} : { dshHome: config.dshHome },
     initialSettings: normalizeSettings({
@@ -143,12 +137,12 @@ function resolveConfig(config: Config = {}): ResolvedConfig {
     }),
     reviewMaxOutputTokens: integer(
       config.reviewMaxOutputTokens,
-      legacyMaxOutputTokens ?? 1_200,
+      1_200,
       128,
     ),
     translationMaxOutputTokens: integer(
       config.translationMaxOutputTokens,
-      legacyMaxOutputTokens ?? 4_096,
+      4_096,
       128,
     ),
     timeoutMs: integer(config.timeoutMs, 30_000, 1_000),

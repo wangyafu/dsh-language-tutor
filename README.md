@@ -145,7 +145,7 @@ $DSH_HOME/state/dsh-language-tutor/settings.json
 
 `provider` 和 `model` 必须一起填写。已有的 `settings.json` 优先于这些初值，因此升级或重启不会覆盖你通过 `/lang` 做过的选择。
 
-检查与翻译使用独立的输出额度。旧配置项 `maxOutputTokens` 仍然兼容，会同时作为两者的额度；新配置应分别使用 `reviewMaxOutputTokens` 和 `translationMaxOutputTokens`。
+检查与翻译使用独立的输出额度，分别由 `reviewMaxOutputTokens` 和 `translationMaxOutputTokens` 控制。
 
 ## 一些具体行为
 
