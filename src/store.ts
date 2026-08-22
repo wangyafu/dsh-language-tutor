@@ -66,6 +66,56 @@ export class SettingsStore {
   }
 }
 
+export interface FlashcardPreferences {
+  readonly sessionLimit: number
+  readonly newPerDay: number
+}
+
+type FlashcardPreferencesPatch = Partial<FlashcardPreferences>
+
+export const MAX_FLASHCARD_REVIEW_LIMIT = 200
+
+function boundedInteger(value: unknown, fallback: number, minimum: number): number {
+  return typeof value === 'number' && Number.isInteger(value)
+    ? Math.min(MAX_FLASHCARD_REVIEW_LIMIT, Math.max(minimum, value))
+    : fallback
+}
+
+function normalizeFlashcardPreferences(
+  value: unknown,
+  fallback: FlashcardPreferences,
+): FlashcardPreferences {
+  const input = typeof value === 'object' && value !== null
+    ? value as Partial<FlashcardPreferences>
+    : {}
+  return Object.freeze({
+    sessionLimit: boundedInteger(input.sessionLimit, fallback.sessionLimit, 1),
+    newPerDay: boundedInteger(input.newPerDay, fallback.newPerDay, 0),
+  })
+}
+
+export class FlashcardPreferencesStore {
+  private value: FlashcardPreferences
+
+  constructor(
+    private readonly path: string,
+    defaults: FlashcardPreferences,
+  ) {
+    const normalizedDefaults = normalizeFlashcardPreferences(defaults, { sessionLimit: 20, newPerDay: 10 })
+    this.value = normalizeFlashcardPreferences(readJson(path), normalizedDefaults)
+  }
+
+  get(): FlashcardPreferences {
+    return this.value
+  }
+
+  update(patch: FlashcardPreferencesPatch): FlashcardPreferences {
+    this.value = normalizeFlashcardPreferences({ ...this.value, ...patch }, this.value)
+    writeJsonAtomic(this.path, this.value)
+    return this.value
+  }
+}
+
 function reviveEntry(value: unknown): FlashcardEntry | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const row = value as Partial<FlashcardEntry>
@@ -136,6 +186,10 @@ export class FlashcardStore {
     return this.entries
   }
 
+  find(id: string): FlashcardEntry | undefined {
+    return this.entries.find(entry => entry.id === id)
+  }
+
   add(word: string, note: string, source: 'tutor' | 'manual' = 'tutor'): boolean {
     const key = normalizedWord(word)
     const cleanNote = note.trim()
@@ -171,6 +225,26 @@ export class FlashcardStore {
     }
     if (added > 0) this.save()
     return added
+  }
+
+  update(id: string, word: string, note: string): FlashcardEntry | undefined {
+    const entry = this.find(id)
+    const key = normalizedWord(word)
+    const cleanNote = note.trim()
+    if (entry === undefined || key.length === 0 || cleanNote.length === 0) return undefined
+    if (this.entries.some(candidate => candidate.id !== id && normalizedWord(candidate.word) === key)) return undefined
+    entry.word = word.trim()
+    entry.note = cleanNote
+    this.save()
+    return entry
+  }
+
+  remove(id: string): boolean {
+    const index = this.entries.findIndex(entry => entry.id === id)
+    if (index < 0) return false
+    this.entries.splice(index, 1)
+    this.save()
+    return true
   }
 
   due(limit: number, newPerDay: number, now = new Date()): FlashcardEntry[] {

@@ -28,11 +28,19 @@ import {
   TRANSLATION_BATCH_CHARS,
 } from './core.js'
 import { AuxiliaryLlmError, runAuxiliaryLlm } from './llm.js'
-import { FlashcardStore, isRetryGrade, Rating, SettingsStore } from './store.js'
+import {
+  FlashcardPreferencesStore,
+  FlashcardStore,
+  isRetryGrade,
+  MAX_FLASHCARD_REVIEW_LIMIT,
+  Rating,
+  SettingsStore,
+} from './store.js'
 import {
   LANGUAGE_TUTOR_EVENT,
   type FlashcardCard,
   type FlashcardEntry,
+  type FlashcardLibraryItem,
   type LanguageTutorCard,
   type ModelRoute,
   type TranslationCard,
@@ -80,8 +88,8 @@ export const Config: z<Config> = z.object({
   translationMaxOutputTokens: z.number().step(1).min(128).default(4_096),
   timeoutMs: z.number().step(1).min(1_000).default(30_000),
   retries: z.number().step(1).min(0).max(2).default(1),
-  flashcardSessionLimit: z.number().step(1).min(1).default(20),
-  flashcardNewPerDay: z.number().step(1).min(0).default(10),
+  flashcardSessionLimit: z.number().step(1).min(1).max(MAX_FLASHCARD_REVIEW_LIMIT).default(20),
+  flashcardNewPerDay: z.number().step(1).min(0).max(MAX_FLASHCARD_REVIEW_LIMIT).default(10),
   requestRetention: z.number().min(0.7).max(0.99).default(0.9),
 })
 
@@ -147,8 +155,8 @@ function resolveConfig(config: Config = {}): ResolvedConfig {
     ),
     timeoutMs: integer(config.timeoutMs, 30_000, 1_000),
     retries: integer(config.retries, 1, 0, 2),
-    flashcardSessionLimit: integer(config.flashcardSessionLimit, 20, 1),
-    flashcardNewPerDay: integer(config.flashcardNewPerDay, 10, 0),
+    flashcardSessionLimit: integer(config.flashcardSessionLimit, 20, 1, MAX_FLASHCARD_REVIEW_LIMIT),
+    flashcardNewPerDay: integer(config.flashcardNewPerDay, 10, 0, MAX_FLASHCARD_REVIEW_LIMIT),
     requestRetention: typeof config.requestRetention === 'number' && Number.isFinite(config.requestRetention)
       ? Math.min(0.99, Math.max(0.7, config.requestRetention))
       : 0.9,
@@ -298,12 +306,41 @@ function gradeFrom(value: string): Grade | undefined {
   return undefined
 }
 
+const FLASHCARD_LIBRARY_PAGE_SIZE = 8
+
+function flashcardLibraryItem(entry: FlashcardEntry, now: Date): FlashcardLibraryItem {
+  if (entry.fsrs.state === 0) {
+    return { id: entry.id, word: entry.word, note: entry.note, source: entry.source, state: 'new' }
+  }
+  const due = new Date(entry.fsrs.due)
+  return {
+    id: entry.id,
+    word: entry.word,
+    note: entry.note,
+    source: entry.source,
+    state: due <= now ? 'due' : 'scheduled',
+    due: due.toISOString(),
+  }
+}
+
+function decodeCommandValue(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return undefined
+  }
+}
+
 export function apply(ctx: Context, rawConfig: Config = {}): void {
   const config = resolveConfig(rawConfig)
   const home = resolveDshHome(config.dshHome)
   const root = join(home, 'state', 'dsh-language-tutor')
   const settings = new SettingsStore(join(root, 'settings.json'), config.initialSettings)
   const flashcards = new FlashcardStore(join(root, 'flashcards.json'), config.requestRetention)
+  const flashcardPreferences = new FlashcardPreferencesStore(join(root, 'flashcard-settings.json'), {
+    sessionLimit: config.flashcardSessionLimit,
+    newPerDay: config.flashcardNewPerDay,
+  })
   const reviewQueues = new Map<SessionId, ReviewQueue>()
   const reviewed = new Set<string>()
   const translated = new Set<string>()
@@ -554,13 +591,57 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     { kind: 'flashcard', stage: 'empty', reviewId: crypto.randomUUID(), remaining: 0, message },
   )
 
+  const flashcardLibrary = (
+    session: Session,
+    libraryId: string,
+    requestedPage: number,
+    role: 'start' | 'update',
+    message?: string,
+  ): number => {
+    const entries = [...flashcards.all()].sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    const pageCount = Math.max(1, Math.ceil(entries.length / FLASHCARD_LIBRARY_PAGE_SIZE))
+    const page = Math.min(pageCount, Math.max(1, requestedPage))
+    const start = (page - 1) * FLASHCARD_LIBRARY_PAGE_SIZE
+    const now = new Date()
+    return appendCard(session, libraryId, role, {
+      kind: 'flashcard',
+      stage: 'library',
+      reviewId: libraryId,
+      remaining: 0,
+      items: entries.slice(start, start + FLASHCARD_LIBRARY_PAGE_SIZE)
+        .map(entry => flashcardLibraryItem(entry, now)),
+      page,
+      pageCount,
+      total: entries.length,
+      ...message === undefined ? {} : { message },
+    })
+  }
+
+  const flashcardSettingsCard = (
+    session: Session,
+    settingsId: string,
+    role: 'start' | 'update',
+    message?: string,
+  ): number => {
+    const current = flashcardPreferences.get()
+    return appendCard(session, settingsId, role, {
+      kind: 'flashcard',
+      stage: 'settings',
+      reviewId: settingsId,
+      remaining: 0,
+      sessionLimit: current.sessionLimit,
+      newPerDay: current.newPerDay,
+      ...message === undefined ? {} : { message },
+    })
+  }
+
   const dealNext = (session: Session, queue: ReviewQueue): number => {
     const cardId = queue.queue[0]
     if (cardId === undefined) {
       delete queue.current
       return flashcardMessage(session, '本轮复习完成。再次运行 /flashcards 可开始新一轮。')
     }
-    const card = flashcards.all().find(entry => entry.id === cardId)
+    const card = flashcards.find(cardId)
     if (card === undefined) {
       queue.queue.shift()
       return dealNext(session, queue)
@@ -581,15 +662,59 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
   ctx.commands.register({
     name: 'flashcards',
     description: 'Review, add, or inspect language-tutor flashcards',
-    input: { hint: '[show <review-id> | rate <review-id> <again|hard|good|easy> | add <word> :: <note> | stats | stop]' },
+    input: { hint: '[library | settings | add <word> :: <note> | edit <id> <word> :: <note> | delete <id> | stats | stop]' },
     handler: ({ agent, rawInput }): CommandResult => {
       const input = rawInput.trim()
       const [action = '', ...parts] = input.split(/\s+/u)
       if (action === 'stats') {
-        const stats = flashcards.stats(config.flashcardNewPerDay)
+        const stats = flashcards.stats(flashcardPreferences.get().newPerDay)
         const next = stats.nextDue === null ? 'none scheduled' : stats.nextDue
         const sourceEventSeq = flashcardMessage(agent.session,
           `卡片 ${stats.total} 张；当前可复习 ${stats.due} 张；其中新卡 ${stats.newCards} 张；下次到期：${next}`)
+        return { kind: 'success', sourceEventSeq }
+      }
+      if (action === 'library' || action === 'list') {
+        const existingId = parts[0]?.startsWith('flashcards:library:') && hasCard(agent.session, parts[0])
+          ? parts[0]
+          : undefined
+        const requestedPage = Number(existingId === undefined ? parts[0] : parts[1])
+        const page = Number.isInteger(requestedPage) ? requestedPage : 1
+        const libraryId = existingId ?? `flashcards:library:${crypto.randomUUID()}`
+        const sourceEventSeq = flashcardLibrary(
+          agent.session,
+          libraryId,
+          page,
+          existingId === undefined ? 'start' : 'update',
+        )
+        return { kind: 'success', sourceEventSeq }
+      }
+      if (action === 'settings') {
+        const existingId = parts[0]?.startsWith('flashcards:settings:') && hasCard(agent.session, parts[0])
+          ? parts[0]
+          : undefined
+        const key = existingId === undefined ? parts[0] : parts[1]
+        const rawValue = existingId === undefined ? parts[1] : parts[2]
+        const settingsId = existingId ?? `flashcards:settings:${crypto.randomUUID()}`
+        if (key === undefined) {
+          const sourceEventSeq = flashcardSettingsCard(agent.session, settingsId, 'start')
+          return { kind: 'success', sourceEventSeq }
+        }
+        const normalizedKey = key === 'session' ? 'sessionLimit' : key === 'new' ? 'newPerDay' : key
+        if (normalizedKey !== 'sessionLimit' && normalizedKey !== 'newPerDay') {
+          return resultError('Setting must be sessionLimit (or session) or newPerDay (or new).')
+        }
+        const value = Number(rawValue)
+        const minimum = normalizedKey === 'sessionLimit' ? 1 : 0
+        if (!Number.isInteger(value) || value < minimum || value > MAX_FLASHCARD_REVIEW_LIMIT) {
+          return resultError(`${normalizedKey} must be an integer from ${minimum} to ${MAX_FLASHCARD_REVIEW_LIMIT}.`)
+        }
+        flashcardPreferences.update({ [normalizedKey]: value })
+        const sourceEventSeq = flashcardSettingsCard(
+          agent.session,
+          settingsId,
+          existingId === undefined ? 'start' : 'update',
+          '学习参数已保存。',
+        )
         return { kind: 'success', sourceEventSeq }
       }
       if (action === 'add') {
@@ -603,6 +728,64 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
           added ? `已加入卡片：${word}` : '没有加入：卡片已存在，或正反面有一项为空。')
         return { kind: 'success', sourceEventSeq }
       }
+      if (action === 'update') {
+        const [libraryId, cardId, rawPage, encodedWord, encodedNote] = parts
+        if (libraryId === undefined || !libraryId.startsWith('flashcards:library:') || !hasCard(agent.session, libraryId)
+          || cardId === undefined || encodedWord === undefined || encodedNote === undefined) {
+          return resultError('This flashcard library is no longer active.')
+        }
+        const word = decodeCommandValue(encodedWord)
+        const note = decodeCommandValue(encodedNote)
+        if (word === undefined || note === undefined) return resultError('The edited flashcard could not be decoded.')
+        if (flashcards.find(cardId) === undefined) return resultError('The flashcard no longer exists.')
+        if (flashcards.update(cardId, word, note) === undefined) {
+          return resultError('Word and note are required, and the word must not duplicate another card.')
+        }
+        const parsedPage = Number(rawPage)
+        const page = Number.isInteger(parsedPage) ? parsedPage : 1
+        const sourceEventSeq = flashcardLibrary(agent.session, libraryId, page, 'update', `已保存：${word.trim()}`)
+        return { kind: 'success', sourceEventSeq }
+      }
+      if (action === 'edit') {
+        const body = input.slice(action.length).trim()
+        const separator = body.indexOf('::')
+        const left = separator < 0 ? '' : body.slice(0, separator).trim()
+        const [cardId, ...wordParts] = left.split(/\s+/u)
+        const word = wordParts.join(' ').trim()
+        const note = separator < 0 ? '' : body.slice(separator + 2).trim()
+        if (cardId === undefined || word.length === 0 || note.length === 0) {
+          return resultError('Use /flashcards edit <card-id> <word or phrase> :: <note>.')
+        }
+        if (flashcards.find(cardId) === undefined) return resultError('The flashcard does not exist.')
+        const updated = flashcards.update(cardId, word, note)
+        if (updated === undefined) return resultError('Another flashcard already uses that word or phrase.')
+        const sourceEventSeq = flashcardMessage(agent.session, `已更新卡片：${updated.word}`)
+        return { kind: 'success', sourceEventSeq }
+      }
+      if (action === 'delete') {
+        const libraryId = parts[0]?.startsWith('flashcards:library:') && hasCard(agent.session, parts[0])
+          ? parts[0]
+          : undefined
+        const cardId = libraryId === undefined ? parts[0] : parts[1]
+        if (cardId === undefined) return resultError('Use /flashcards delete <card-id>.')
+        const entry = flashcards.find(cardId)
+        if (entry === undefined) return resultError('The flashcard does not exist.')
+        flashcards.remove(cardId)
+        for (const queue of reviewQueues.values()) {
+          for (let index = queue.queue.length - 1; index >= 0; index -= 1) {
+            if (queue.queue[index] === cardId) queue.queue.splice(index, 1)
+          }
+          if (queue.current?.cardId === cardId) delete queue.current
+        }
+        if (libraryId !== undefined) {
+          const rawPage = Number(parts[2])
+          const page = Number.isInteger(rawPage) ? rawPage : 1
+          const sourceEventSeq = flashcardLibrary(agent.session, libraryId, page, 'update', `已删除：${entry.word}`)
+          return { kind: 'success', sourceEventSeq }
+        }
+        const sourceEventSeq = flashcardMessage(agent.session, `已删除卡片：${entry.word}`)
+        return { kind: 'success', sourceEventSeq }
+      }
       if (action === 'stop') {
         reviewQueues.delete(agent.id)
         const sourceEventSeq = flashcardMessage(agent.session, '复习已停止。')
@@ -614,7 +797,7 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
         if (queue === undefined || current === undefined || parts[0] !== current.reviewId) {
           return resultError('This review card is no longer active.')
         }
-        const card = flashcards.all().find(entry => entry.id === current.cardId)
+        const card = flashcards.find(current.cardId)
         if (card === undefined) return resultError('The flashcard no longer exists.')
         current.revealed = true
         const sourceEventSeq = appendCard(agent.session, current.reviewId, 'update', {
@@ -656,9 +839,10 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
         return { kind: 'success', sourceEventSeq }
       }
       if (input.length > 0) {
-        return resultError('Unknown flashcards action. Try /flashcards, /flashcards stats, or /flashcards add <word> :: <note>.')
+        return resultError('Unknown flashcards action. Try /flashcards, /flashcards library, /flashcards settings, or /flashcards add <word> :: <note>.')
       }
-      const due = flashcards.due(config.flashcardSessionLimit, config.flashcardNewPerDay)
+      const preferences = flashcardPreferences.get()
+      const due = flashcards.due(preferences.sessionLimit, preferences.newPerDay)
       if (due.length === 0) {
         const sourceEventSeq = flashcardMessage(agent.session, '现在没有到期卡片。可用 /flashcards add <word> :: <note> 手动添加。')
         return { kind: 'success', sourceEventSeq }

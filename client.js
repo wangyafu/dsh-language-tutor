@@ -9,6 +9,7 @@ window.__ModuleLoader__.load({
     var React = require('react')
     var primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     var Button = primitives.Button
+    var Input = primitives.Input
     var MarkdownText = primitives.MarkdownText
     var Pill = primitives.Pill
 
@@ -42,6 +43,17 @@ window.__ModuleLoader__.load({
       borderTop: '1px solid var(--dsw-border-color, rgba(128,128,128,.14))',
     }
     var BUTTONS = { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }
+
+    function flashcardDueText(item) {
+      if (item.state === 'new') return '新卡'
+      if (item.state === 'due') return '已到期'
+      if (!item.due) return '已安排'
+      try {
+        return '下次 ' + new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(item.due))
+      } catch (_error) {
+        return '已安排'
+      }
+    }
 
     function ReviewCard(props) {
       var card = props.node.data
@@ -128,15 +140,140 @@ window.__ModuleLoader__.load({
       var card = props.node.data
       var busyState = React.useState(false)
       var errorState = React.useState('')
-      function execute(line) {
+      var editIdState = React.useState('')
+      var editWordState = React.useState('')
+      var editNoteState = React.useState('')
+      var deleteIdState = React.useState('')
+      function execute(line, onSuccess) {
         if (busyState[0] || typeof props.runCommand !== 'function') return
         busyState[1](true)
         errorState[1]('')
         Promise.resolve(props.runCommand(line)).then(function (result) {
           if (result && result.ok === false) errorState[1](result.error && result.error.message || 'Command failed')
+          else if (typeof onSuccess === 'function') onSuccess()
         }).catch(function (error) {
           errorState[1](error && error.message || String(error))
         }).finally(function () { busyState[1](false) })
+      }
+      if (card.stage === 'library') {
+        var items = Array.isArray(card.items) ? card.items : []
+        var page = card.page || 1
+        var pageCount = card.pageCount || 1
+        return h('section', { style: CARD, className: 'dsh-language-tutor-flashcard-library' },
+          h('div', { style: TITLE },
+            h('span', null, '🗂 词卡库'),
+            h(Pill, null, (card.total || 0) + ' 张')),
+          card.message ? h('div', {
+            style: { color: 'var(--dsw-alias-fg-success, #16865b)', marginBottom: 6 },
+          }, card.message) : null,
+          items.length === 0 ? h('div', { style: MUTED }, '还没有词卡。可用 /flashcards add 单词 :: 释义 添加。') : null,
+          items.map(function (item) {
+            var editing = editIdState[0] === item.id
+            var confirmingDelete = deleteIdState[0] === item.id
+            return h('div', { key: item.id, style: ROW },
+              h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+                h('strong', { style: { fontSize: 14 } }, item.word),
+                h('span', { style: { display: 'flex', gap: 5 } },
+                  h(Pill, null, item.source === 'tutor' ? '自动' : '手动'),
+                  h(Pill, { active: item.state === 'due' }, flashcardDueText(item)))),
+              editing
+                ? h('div', { style: { display: 'grid', gap: 7, marginTop: 7 } },
+                    h(Input, {
+                      value: editWordState[0],
+                      placeholder: '单词或短语',
+                      disabled: busyState[0],
+                      onChange: function (event) { editWordState[1](event.target.value) },
+                      style: { width: '100%' },
+                    }),
+                    h(Input, {
+                      value: editNoteState[0],
+                      placeholder: '释义或笔记',
+                      disabled: busyState[0],
+                      onChange: function (event) { editNoteState[1](event.target.value) },
+                      style: { width: '100%' },
+                    }),
+                    h('div', { style: { display: 'flex', gap: 6 } },
+                      h(Button, {
+                        variant: 'primary', size: 'sm', disabled: busyState[0] || !editWordState[0].trim() || !editNoteState[0].trim(),
+                        onClick: function () {
+                          execute('/flashcards update ' + card.reviewId + ' ' + item.id + ' ' + page + ' '
+                            + encodeURIComponent(editWordState[0].trim()) + ' ' + encodeURIComponent(editNoteState[0].trim()), function () {
+                              editIdState[1]('')
+                            })
+                        },
+                      }, '保存'),
+                      h(Button, {
+                        variant: 'outline', size: 'sm', disabled: busyState[0],
+                        onClick: function () { editIdState[1]('') },
+                      }, '取消')))
+                : h('div', null,
+                    h('div', { style: Object.assign({}, MUTED, { marginTop: 2 }) }, item.note),
+                    h('div', { style: { display: 'flex', gap: 6, marginTop: 6 } },
+                      h(Button, {
+                        variant: 'outline', size: 'sm', disabled: busyState[0],
+                        onClick: function () {
+                          editIdState[1](item.id)
+                          editWordState[1](item.word)
+                          editNoteState[1](item.note)
+                          deleteIdState[1]('')
+                        },
+                      }, '编辑'),
+                      confirmingDelete
+                        ? h(React.Fragment, null,
+                            h(Button, {
+                              variant: 'primary', size: 'sm', disabled: busyState[0],
+                              onClick: function () {
+                                execute('/flashcards delete ' + card.reviewId + ' ' + item.id + ' ' + page, function () {
+                                  deleteIdState[1]('')
+                                })
+                              },
+                            }, '确认删除'),
+                            h(Button, {
+                              variant: 'outline', size: 'sm', disabled: busyState[0],
+                              onClick: function () { deleteIdState[1]('') },
+                            }, '取消'))
+                        : h(Button, {
+                            variant: 'outline', size: 'sm', disabled: busyState[0],
+                            onClick: function () { deleteIdState[1](item.id); editIdState[1]('') },
+                          }, '删除'))))
+          }),
+          pageCount > 1 ? h('div', { style: Object.assign({}, BUTTONS, { alignItems: 'center' }) },
+            h(Button, {
+              variant: 'outline', size: 'sm', disabled: busyState[0] || page <= 1,
+              onClick: function () { execute('/flashcards library ' + card.reviewId + ' ' + (page - 1)) },
+            }, '上一页'),
+            h('span', { style: MUTED }, page + ' / ' + pageCount),
+            h(Button, {
+              variant: 'outline', size: 'sm', disabled: busyState[0] || page >= pageCount,
+              onClick: function () { execute('/flashcards library ' + card.reviewId + ' ' + (page + 1)) },
+            }, '下一页')) : null,
+          errorState[0] ? h('div', { style: { color: 'var(--dsw-alias-fg-danger, #c0392b)', marginTop: 6 } }, errorState[0]) : null)
+      }
+      if (card.stage === 'settings') {
+        function settingRow(label, detail, key, value, step, minimum) {
+          return h('div', { style: ROW },
+            h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
+              h('div', null, h('strong', null, label), h('div', { style: MUTED }, detail)),
+              h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                h(Button, {
+                  variant: 'outline', size: 'sm', disabled: busyState[0] || value <= minimum,
+                  onClick: function () { execute('/flashcards settings ' + card.reviewId + ' ' + key + ' ' + Math.max(minimum, value - step)) },
+                }, '−'),
+                h('strong', { style: { minWidth: 28, textAlign: 'center' } }, String(value)),
+                h(Button, {
+                  variant: 'outline', size: 'sm', disabled: busyState[0] || value >= 200,
+                  onClick: function () { execute('/flashcards settings ' + card.reviewId + ' ' + key + ' ' + Math.min(200, value + step)) },
+                }, '+'))))
+        }
+        return h('section', { style: CARD, className: 'dsh-language-tutor-flashcard-settings' },
+          h('div', { style: TITLE }, h('span', null, '🗂 复习设置')),
+          card.message ? h('div', {
+            style: { color: 'var(--dsw-alias-fg-success, #16865b)', marginBottom: 6 },
+          }, card.message) : null,
+          settingRow('每轮上限', '一次复习最多发出的卡片数', 'sessionLimit', card.sessionLimit || 20, 5, 1),
+          settingRow('每日新卡', '每天最多引入的新卡数', 'newPerDay', typeof card.newPerDay === 'number' ? card.newPerDay : 10, 1, 0),
+          h('div', { style: Object.assign({}, MUTED, { marginTop: 8 }) }, '修改后从下一轮 /flashcards 开始生效。'),
+          errorState[0] ? h('div', { style: { color: 'var(--dsw-alias-fg-danger, #c0392b)', marginTop: 6 } }, errorState[0]) : null)
       }
       if (card.stage === 'empty') {
         return h('section', { style: CARD },

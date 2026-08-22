@@ -75,7 +75,16 @@ export interface TranslationCard {
   readonly error?: string
 }
 
-export type FlashcardStage = 'question' | 'answer' | 'rated' | 'empty'
+export type FlashcardStage = 'question' | 'answer' | 'rated' | 'empty' | 'library' | 'settings'
+
+export interface FlashcardLibraryItem {
+  readonly id: string
+  readonly word: string
+  readonly note: string
+  readonly source: 'tutor' | 'manual'
+  readonly state: 'new' | 'due' | 'scheduled'
+  readonly due?: string
+}
 
 export interface FlashcardCard {
   readonly kind: 'flashcard'
@@ -88,6 +97,12 @@ export interface FlashcardCard {
   readonly nextDue?: string
   readonly remaining: number
   readonly message?: string
+  readonly items?: readonly FlashcardLibraryItem[]
+  readonly page?: number
+  readonly pageCount?: number
+  readonly total?: number
+  readonly sessionLimit?: number
+  readonly newPerDay?: number
 }
 
 export type LanguageTutorCard = ReviewCard | TranslationCard | FlashcardCard

@@ -12,6 +12,8 @@
 - 用母语提问时，教你怎样用学习语言表达同一个意思；重点词汇会自动加入单词卡。
 - 点击回答下方的 `🌐`，或运行 `/translate`，生成原文和译文交替出现的双语卡片。
 - 运行 `/flashcards` 复习单词。调度使用 FSRS，评分分为 Again、Hard、Good、Easy。
+- 用 `/flashcards library` 打开词卡库，可分页查看、编辑或删除已经保存的词卡。
+- 用 `/flashcards settings` 调整每轮卡片数和每日新卡数，不必改配置文件。
 - 可自动翻译较长的最终回答，也可为检查或翻译附带一小段最近的会话上下文。
 
 Web 卡片直接使用 DSH 的按钮、Markdown 渲染器、颜色变量和会话槽位。插件只补了卡片排版，没有另做一套主题。
@@ -52,7 +54,7 @@ dsh --profile web
 ```sh
 cd dsh-language-tutor
 npm pack
-dsh plugin --profile web add ./dsh-language-tutor-0.1.0.tgz
+dsh plugin --profile web add ./dsh-language-tutor-0.2.0.tgz
 ```
 
 也可以直接从 GitHub 安装：
@@ -77,6 +79,7 @@ dsh plugin --profile web remove dsh-language-tutor
 2. 换成中文问同样的问题。插件会给出自然的英文整句、重点词汇和相关语法。
 3. 点击任意最终回答下方的 `🌐` 查看双语版本。
 4. 运行 `/flashcards`，显示答案后给卡片评分。
+5. 运行 `/flashcards library`，检查自动积累的词卡；需要时可直接在卡片里修改释义。
 
 写作检查失败不会影响 Agent 请求。辅助请求默认跟随当前会话的 provider/model；如果想单独使用便宜一些的模型，可运行：
 
@@ -105,11 +108,15 @@ dsh plugin --profile web remove dsh-language-tutor
 | `/lang context on\|off` | 开关翻译时的最近会话片段 |
 | `/translate` | 翻译最后一条助手回答 |
 | `/flashcards` | 开始一轮到期卡片复习 |
+| `/flashcards library [page]` | 打开词卡库，可分页、编辑和删除 |
+| `/flashcards settings` | 用卡片调整每轮上限和每日新卡数 |
 | `/flashcards stats` | 查看卡片数量和下次到期时间 |
 | `/flashcards add <word> :: <note>` | 手动加入一张卡片 |
+| `/flashcards edit <card-id> <word> :: <note>` | 用命令修改词卡；通常直接点词卡库里的“编辑”即可 |
+| `/flashcards delete <card-id>` | 用命令删除词卡；通常直接点词卡库里的“删除”即可 |
 | `/flashcards stop` | 停止当前复习轮次 |
 
-`/flashcards show ...` 和 `/flashcards rate ...` 是 Web 卡片按钮使用的内部命令，平时不需要手打。
+`/flashcards show ...`、`/flashcards rate ...` 和 `/flashcards update ...` 是 Web 卡片按钮使用的内部命令，平时不需要手打。
 
 ## 配置
 
@@ -119,7 +126,7 @@ dsh plugin --profile web remove dsh-language-tutor
 $DSH_HOME/state/dsh-language-tutor/settings.json
 ```
 
-单词卡保存在同目录的 `flashcards.json`。如果没有设置 `DSH_HOME`，默认目录是 `~/.dsh`。
+单词卡保存在同目录的 `flashcards.json`，复习参数保存在 `flashcard-settings.json`。如果没有设置 `DSH_HOME`，默认目录是 `~/.dsh`。
 
 安装时也能在 profile 的 `cordis.patch.yml` 里给插件设初值：
 
@@ -144,6 +151,8 @@ $DSH_HOME/state/dsh-language-tutor/settings.json
 ```
 
 `provider` 和 `model` 必须一起填写。已有的 `settings.json` 优先于这些初值，因此升级或重启不会覆盖你通过 `/lang` 做过的选择。
+
+`flashcardSessionLimit` 和 `flashcardNewPerDay` 也是初值。第一次用 `/flashcards settings` 修改后，以 `flashcard-settings.json` 里的值为准。
 
 检查与翻译使用独立的输出额度，分别由 `reviewMaxOutputTokens` 和 `translationMaxOutputTokens` 控制。
 
