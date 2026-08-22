@@ -5,6 +5,8 @@ import {
   deepFreeze,
   type FinishReason,
   type GenerateOptions,
+  type Message,
+  type ToolSchema,
 } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ModelRoute } from './types.js'
@@ -17,6 +19,17 @@ export interface AuxiliaryLlmOptions {
   readonly timeoutMs: number
   readonly retries: number
   readonly signal?: AbortSignal
+  readonly fork?: AuxiliaryLlmFork
+}
+
+/** Immutable prefix captured from a DSH agent request for contextual side calls. */
+export interface AuxiliaryLlmFork {
+  readonly messages: readonly Message[]
+  readonly system?: string
+  readonly tools?: readonly ToolSchema[]
+  readonly reasoningEffort?: GenerateOptions['reasoningEffort']
+  readonly temperature?: number
+  readonly stop?: readonly string[]
 }
 
 export class AuxiliaryLlmError extends Error {
@@ -94,7 +107,12 @@ async function attempt(ctx: Context, options: AuxiliaryLlmOptions, signal: Abort
   const request = deepFreeze<GenerateOptions>({
     provider: options.route.provider,
     model: options.route.model,
-    messages: [message],
+    messages: [...(options.fork?.messages ?? []), message],
+    ...options.fork?.system === undefined ? {} : { system: options.fork.system },
+    ...options.fork?.tools === undefined ? {} : { tools: [...options.fork.tools] },
+    ...options.fork?.reasoningEffort === undefined ? {} : { reasoningEffort: options.fork.reasoningEffort },
+    ...options.fork?.temperature === undefined ? {} : { temperature: options.fork.temperature },
+    ...options.fork?.stop === undefined ? {} : { stop: [...options.fork.stop] },
     maxTokens: options.maxTokens,
     signal,
     ...options.sessionId === undefined ? {} : { sessionId: options.sessionId },

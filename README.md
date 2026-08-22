@@ -15,7 +15,7 @@
 - 用 `/flashcards library` 打开词卡库，可分页查看、编辑或删除已经保存的词卡。
 - 用 `/flashcards settings` 调整每轮卡片数和每日新卡数，不必改配置文件。
 - 运行 `/lang` 打开设置卡，直接切换检查、教学、翻译、语言和辅助模型。
-- 可自动翻译较长的最终回答，也可为检查或翻译附带一小段最近的会话上下文。
+- 可自动翻译较长的最终回答；上下文模式会复用完整会话前缀和服务商的提示缓存。
 
 Web 卡片直接使用 DSH 的按钮、Markdown 渲染器、颜色变量和会话槽位。插件只补了卡片排版，没有另做一套主题。
 
@@ -55,7 +55,7 @@ dsh --profile web
 ```sh
 cd dsh-language-tutor
 npm pack
-dsh plugin --profile web add ./dsh-language-tutor-0.3.0.tgz
+dsh plugin --profile web add ./dsh-language-tutor-0.4.0.tgz
 ```
 
 也可以直接从 GitHub 安装：
@@ -99,14 +99,14 @@ dsh plugin --profile web remove dsh-language-tutor
 | 命令 | 用途 |
 | --- | --- |
 | `/lang` | 打开交互式设置卡；Headless 模式会显示同样设置的文本版 |
-| `/lang check off\|on\|context` | 关闭检查、普通检查，或带最近会话片段检查 |
+| `/lang check off\|on\|context` | 关闭检查、普通检查，或复用完整会话上下文检查 |
 | `/lang tutor on\|off` | 开关母语到学习语言的教学模式 |
 | `/lang auto on\|off` | 开关自动翻译 |
 | `/lang native <code>` | 设置说明和译文语言，如 `zh-CN`、`ja` |
 | `/lang learning <code>` | 设置正在学习的语言，如 `en`、`fr` |
 | `/lang model <provider/model>` | 指定辅助请求使用的 DSH 模型路由 |
 | `/lang model default` | 重新跟随当前会话模型 |
-| `/lang context on\|off` | 开关翻译时的最近会话片段 |
+| `/lang context on\|off` | 开关翻译时的完整会话上下文和提示缓存复用 |
 | `/translate` | 翻译最后一条助手回答 |
 | `/flashcards` | 开始一轮到期卡片复习 |
 | `/flashcards library [page]` | 打开词卡库，可分页、编辑和删除 |
@@ -164,7 +164,8 @@ $DSH_HOME/state/dsh-language-tutor/settings.json
 - 自动翻译只处理至少 15 个文字单位且不含工具调用的最终回答。
 - 翻译最多读取 12000 个字符，并把长段落拆分成约 3500 字符的批次。遇到输出截断时会继续拆小重试；带上下文翻译失败后会自动退回无上下文模式。
 - 5 行以内的代码块在双语卡片里原样显示，更长的代码块折叠为行数提示。
-- `check context` 和 `context on` 最多附带最近 8 条消息、约 4500 个字符；它们不会复制整段工具轨迹。
+- `check context` 和 `context on` 会重放 DSH 最近一次 Agent 请求的系统提示、消息历史和工具定义，再追加本次检查或翻译指令。路由不变时，服务商可以复用同一会话的提示缓存。
+- 如果 `/lang model` 指向另一条模型路由，设置卡会提醒你：完整会话仍会发给该路由，但无法复用当前会话的缓存。上下文请求失败时会自动退回无上下文模式；只有尚未捕获到 Agent 请求时，才临时使用最近 8 条消息、约 4500 个字符的摘要式上下文。
 - 辅助请求有独立超时和有限重试。写作检查失败只记入 DSH 日志；翻译失败会更新当前卡片，但两者都不会中断主对话。
 
 ## 开发

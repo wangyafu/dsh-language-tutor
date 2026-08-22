@@ -206,10 +206,18 @@ window.__ModuleLoader__.load({
         card.message ? h('div', {
           style: { color: 'var(--dsw-alias-fg-success, #16865b)', marginBottom: 6 },
         }, card.message) : null,
-        choiceRow('写作检查', '检查学习语言中的错误；context 会参考最近对话。', ['off', 'on', 'context'], card.check, 'check'),
+        card.warning ? h('div', {
+          style: {
+            color: 'var(--dsw-alias-fg-warning, #9a6700)',
+            borderLeft: '3px solid var(--dsw-alias-fg-warning, #9a6700)',
+            paddingLeft: 9,
+            marginBottom: 8,
+          },
+        }, card.warning) : null,
+        choiceRow('写作检查', '检查学习语言中的错误；context 会参考完整会话。', ['off', 'on', 'context'], card.check, 'check'),
         choiceRow('母语教学', '用母语提问时，给出学习语言表达和词汇。', ['off', 'on'], card.tutor ? 'on' : 'off', 'tutor'),
         choiceRow('自动翻译', '自动为较长的助手回答生成双语卡。', ['off', 'on'], card.auto ? 'on' : 'off', 'auto'),
-        choiceRow('翻译上下文', '翻译时带上最近一小段对话。', ['off', 'on'], card.context ? 'on' : 'off', 'context'),
+        choiceRow('翻译上下文', '翻译时复用完整会话前缀和提示缓存。', ['off', 'on'], card.context ? 'on' : 'off', 'context'),
         inputRow('学习语言', '例如 en、fr、ja。', learningState, 'learning', 'en'),
         inputRow('母语', '用于讲解和翻译，例如 zh-CN。', nativeState, 'native', 'zh-CN'),
         h('div', { style: ROW },

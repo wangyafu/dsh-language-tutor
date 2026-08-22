@@ -1,6 +1,6 @@
 {
   "name": "dsh-language-tutor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Language-learning plugin for DeepSeek Harness with writing feedback, bilingual translations, and FSRS flashcards",
   "type": "module",
   "license": "MIT",

@@ -116,6 +116,7 @@ export interface LanguageSettingsCard {
   readonly context: boolean
   readonly route?: ModelRoute
   readonly message?: string
+  readonly warning?: string
 }
 
 export type LanguageTutorCard = ReviewCard | TranslationCard | FlashcardCard | LanguageSettingsCard

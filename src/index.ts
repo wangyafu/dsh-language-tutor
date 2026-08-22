@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import type { LlmCallConfig, Message } from '@deepseek-ai/dsh-llm'
+import { isAgentLoopRequest, type GenerateOptions, type LlmCallConfig, type Message } from '@deepseek-ai/dsh-llm'
 import { KNOWN_SESSION_EVENT_TYPES, type Session } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
 import z from '@deepseek-ai/schemastery'
@@ -27,7 +27,7 @@ import {
   splitTranslationText,
   TRANSLATION_BATCH_CHARS,
 } from './core.js'
-import { AuxiliaryLlmError, runAuxiliaryLlm } from './llm.js'
+import { AuxiliaryLlmError, runAuxiliaryLlm, type AuxiliaryLlmFork } from './llm.js'
 import {
   FlashcardPreferencesStore,
   FlashcardStore,
@@ -118,6 +118,11 @@ interface ReviewQueue {
 interface TranslationPiece {
   readonly segmentIndex: number
   readonly text: string
+}
+
+interface SessionFork {
+  readonly route: ModelRoute
+  readonly request: AuxiliaryLlmFork
 }
 
 function integer(value: number | undefined, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
@@ -346,13 +351,32 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
   const reviewed = new Set<string>()
   const translated = new Set<string>()
   const reviewControllers = new Map<SessionId, AbortController>()
+  const sessionForks = new Map<SessionId, SessionFork>()
   const lifetime = new AbortController()
+
+  ctx.on('llm/stream', (options: GenerateOptions, next) => {
+    if (isAgentLoopRequest(options) && options.sessionId !== undefined) {
+      sessionForks.set(options.sessionId, {
+        route: { provider: options.provider, model: options.model },
+        request: {
+          messages: options.messages,
+          ...options.system === undefined ? {} : { system: options.system },
+          ...options.tools === undefined ? {} : { tools: options.tools },
+          ...options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort },
+          ...options.temperature === undefined ? {} : { temperature: options.temperature },
+          ...options.stop === undefined ? {} : { stop: options.stop },
+        },
+      })
+    }
+    return next()
+  })
 
   ctx.effect(() => () => {
     lifetime.abort(new Error('dsh-language-tutor disposed'))
     for (const controller of reviewControllers.values()) controller.abort()
     reviewControllers.clear()
     reviewQueues.clear()
+    sessionForks.clear()
   }, 'dsh-language-tutor: runtime lifecycle')
 
   const llmText = (
@@ -361,6 +385,7 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     sessionId: SessionId,
     maxTokens: number,
     signal: AbortSignal = lifetime.signal,
+    fork?: AuxiliaryLlmFork,
   ): Promise<string> => runAuxiliaryLlm(ctx, {
     route,
     prompt,
@@ -369,6 +394,7 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     maxTokens,
     timeoutMs: config.timeoutMs,
     retries: config.retries,
+    ...fork === undefined ? {} : { fork },
   })
 
   const runReview = async (
@@ -385,16 +411,30 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     reviewed.add(cardId)
     const route = current.route ?? { provider: proposed.provider, model: proposed.model }
     try {
-      const context = current.check === 'context' ? contextExcerpt(agent.session, message.id) : undefined
-      const raw = await llmText(
+      const snapshot = current.check === 'context' ? sessionForks.get(agent.id) : undefined
+      const excerpt = current.check === 'context' && snapshot === undefined
+        ? contextExcerpt(agent.session, message.id)
+        : undefined
+      const attempt = async (fork?: AuxiliaryLlmFork) => parseReviewResult(await llmText(
         route,
-        buildReviewPrompt(text, current, context),
+        buildReviewPrompt(text, current, fork === undefined ? excerpt : true),
         agent.id,
         config.reviewMaxOutputTokens,
         controller.signal,
-      )
+        fork,
+      ))
+      let parsed
+      try {
+        parsed = await attempt(snapshot?.request)
+      } catch (error) {
+        if (snapshot === undefined || controller.signal.aborted) throw error
+        ctx.logger.warn(`dsh-language-tutor: contextual review failed, retrying without session fork: ${safeError(error)}`)
+        parsed = await attempt(undefined)
+      }
+      if (parsed === undefined && snapshot !== undefined && !controller.signal.aborted) {
+        parsed = await attempt(undefined)
+      }
       if (controller.signal.aborted) return
-      const parsed = parseReviewResult(raw)
       if (parsed === undefined || parsed.mode === 'skip') return
       if (parsed.mode === 'check') {
         if (parsed.items.length === 0 && parsed.rephrase === null) return
@@ -456,7 +496,11 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     const cardId = `translation:${message.id}:${crypto.randomUUID()}`
     appendCard(session, cardId, 'start', { kind: 'translation', native: current.native, status: 'loading' })
 
-    const translateTexts = async (texts: readonly string[], context?: string): Promise<string[]> => {
+    const translateTexts = async (
+      texts: readonly string[],
+      context?: string | true,
+      fork?: AuxiliaryLlmFork,
+    ): Promise<string[]> => {
       const budget = translationTokenBudget(texts, config.translationMaxOutputTokens)
       let hitOutputLimit = false
       try {
@@ -466,6 +510,7 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
           session.id,
           budget,
           signal,
+          fork,
         )
         const values = parseSegmentTranslations(raw, texts.length)
         if (values !== undefined) return values
@@ -476,15 +521,15 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
 
       if (texts.length > 1) {
         const middle = Math.ceil(texts.length / 2)
-        const left = await translateTexts(texts.slice(0, middle), context)
-        const right = await translateTexts(texts.slice(middle), context)
+        const left = await translateTexts(texts.slice(0, middle), context, fork)
+        const right = await translateTexts(texts.slice(middle), context, fork)
         return [...left, ...right]
       }
 
       const text = texts[0] ?? ''
       if (hitOutputLimit && text.length > 400) {
         const parts = splitTranslationText(text, Math.max(200, Math.ceil(text.length / 2)))
-        if (parts.length > 1) return [(await translateTexts(parts, context)).join('\n\n')]
+        if (parts.length > 1) return [(await translateTexts(parts, context, fork)).join('\n\n')]
       }
 
       try {
@@ -494,23 +539,24 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
           session.id,
           translationTokenBudget([text], config.translationMaxOutputTokens),
           signal,
+          fork,
         )]
       } catch (error) {
         if (!(error instanceof AuxiliaryLlmError) || error.code !== 'MAX_TOKENS' || text.length <= 400) throw error
         const parts = splitTranslationText(text, Math.max(200, Math.ceil(text.length / 2)))
         if (parts.length <= 1) throw error
-        return [(await translateTexts(parts, context)).join('\n\n')]
+        return [(await translateTexts(parts, context, fork)).join('\n\n')]
       }
     }
 
-    const attempt = async (context?: string): Promise<TranslationCard> => {
+    const attempt = async (context?: string | true, fork?: AuxiliaryLlmFork): Promise<TranslationCard> => {
       const markdown = segmentMarkdown(clipped)
       const prose = markdown.flatMap(segment => segment.kind === 'prose' ? [segment.text] : [])
       if (prose.length > 0) {
         const pieces = translationPieces(prose)
         const translatedPieces: string[] = []
         for (const batch of translationBatches(pieces)) {
-          translatedPieces.push(...await translateTexts(batch.map(piece => piece.text), context))
+          translatedPieces.push(...await translateTexts(batch.map(piece => piece.text), context, fork))
         }
         const bySegment = Array.from({ length: prose.length }, () => [] as string[])
         pieces.forEach((piece, index) => bySegment[piece.segmentIndex]?.push(translatedPieces[index] ?? ''))
@@ -526,18 +572,22 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
         session.id,
         config.translationMaxOutputTokens,
         signal,
+        fork,
       )
       return { kind: 'translation', native: current.native, status: 'done', text }
     }
 
     try {
-      const context = current.context ? contextExcerpt(session, message.id) : undefined
+      const snapshot = current.context ? sessionForks.get(session.id) : undefined
+      const excerpt = current.context && snapshot === undefined ? contextExcerpt(session, message.id) : undefined
+      const context = snapshot === undefined ? excerpt : true
+      const hadContext = snapshot !== undefined || excerpt !== undefined
       let card: TranslationCard
       try {
-        card = await attempt(context)
+        card = await attempt(context, snapshot?.request)
       } catch (error) {
-        if (context === undefined || signal?.aborted === true) throw error
-        ctx.logger.warn(`dsh-language-tutor: contextual translation failed, retrying without context: ${safeError(error)}`)
+        if (!hadContext || signal?.aborted === true) throw error
+        ctx.logger.warn(`dsh-language-tutor: contextual translation failed, retrying without session fork: ${safeError(error)}`)
         card = await attempt(undefined)
       }
       return appendCard(session, cardId, 'update', card)
@@ -866,6 +916,12 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
         message?: string,
       ): CommandResult => {
         const current = settings.get()
+        const sessionConfig = agent.session.requestHeader()?.config
+        const warning = (current.context || current.check === 'context') && current.route !== undefined
+          && sessionConfig !== undefined
+          && (current.route.provider !== sessionConfig.provider || current.route.model !== sessionConfig.model)
+          ? `上下文模式会把完整会话前缀发送给 ${displayRoute(current.route)}；它与当前会话模型 ${sessionConfig.provider}/${sessionConfig.model} 不同，无法复用当前会话的提示缓存。`
+          : undefined
         const card: LanguageSettingsCard = {
           kind: 'settings',
           settingsId,
@@ -877,9 +933,11 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
           context: current.context,
           ...current.route === undefined ? {} : { route: current.route },
           ...message === undefined ? {} : { message },
+          ...warning === undefined ? {} : { warning },
         }
         const sourceEventSeq = appendCard(agent.session, settingsId, role, card)
-        return { kind: 'success', text: settingsText(current), sourceEventSeq }
+        const text = warning === undefined ? settingsText(current) : `${settingsText(current)}\n\nWarning: ${warning}`
+        return { kind: 'success', text, sourceEventSeq }
       }
 
       const updateSetting = (key: string, value: string): string | undefined => {

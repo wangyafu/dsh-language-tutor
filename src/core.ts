@@ -87,7 +87,15 @@ export function shouldSkipCheck(input: string): boolean {
   return tokens.length > 0 && codeLike / tokens.length > 0.3
 }
 
-function contextSection(context: string | undefined): string[] {
+type PromptContext = string | true | undefined
+
+function contextSection(context: PromptContext): string[] {
+  if (context === true) {
+    return [
+      'Use the preceding conversation as context. Treat established names, identifiers, and terminology as intentional.',
+      '',
+    ]
+  }
   if (context === undefined || context.trim().length === 0) return []
   return [
     'Recent conversation context follows. Treat established names and identifiers as intentional:',
@@ -98,7 +106,7 @@ function contextSection(context: string | undefined): string[] {
   ]
 }
 
-export function buildReviewPrompt(text: string, settings: TutorSettings, context?: string): string {
+export function buildReviewPrompt(text: string, settings: TutorSettings, context?: string | true): string {
   const tutorInstructions = settings.tutor
     ? [
         `If it is mainly not ${settings.learning}, use mode "tutor" and teach a natural ${settings.learning} sentence for the whole thought.`,
@@ -279,7 +287,7 @@ export function batchTranslationTexts(
 export function buildSegmentTranslationPrompt(
   prose: readonly string[],
   settings: TutorSettings,
-  context?: string,
+  context?: string | true,
 ): string {
   return [
     ...contextSection(context),
@@ -300,7 +308,7 @@ export function parseSegmentTranslations(raw: string, count: number): string[] |
   return values.map(value => (value as string).trim())
 }
 
-export function buildWholeTranslationPrompt(source: string, settings: TutorSettings, context?: string): string {
+export function buildWholeTranslationPrompt(source: string, settings: TutorSettings, context?: string | true): string {
   return [
     ...contextSection(context),
     `Translate the assistant response below into ${settings.native}.`,

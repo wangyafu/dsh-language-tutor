@@ -47,6 +47,12 @@ describe('settings and prompt screening', () => {
     assert.match(prompt, /earlier term/u)
     assert.match(prompt, /<prompt>/u)
   })
+
+  it('marks a replayed session prefix as full conversation context', () => {
+    const prompt = buildReviewPrompt('I has a question about Sea Glass.', normalizeSettings({}), true)
+    assert.match(prompt, /preceding conversation/u)
+    assert.doesNotMatch(prompt, /<context>/u)
+  })
 })
 
 describe('review response parsing', () => {
