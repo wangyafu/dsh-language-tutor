@@ -136,6 +136,107 @@ window.__ModuleLoader__.load({
           : h(MarkdownText, { text: card.text || '' }))
     }
 
+    function LanguageSettingsView(props) {
+      var card = props.node.data
+      var busyState = React.useState(false)
+      var errorState = React.useState('')
+      var learningState = React.useState(card.learning || 'en')
+      var nativeState = React.useState(card.native || 'zh-CN')
+      var routeText = card.route && card.route.provider && card.route.model
+        ? card.route.provider + '/' + card.route.model
+        : ''
+      var modelState = React.useState(routeText)
+
+      React.useEffect(function () { learningState[1](card.learning || 'en') }, [card.learning])
+      React.useEffect(function () { nativeState[1](card.native || 'zh-CN') }, [card.native])
+      React.useEffect(function () { modelState[1](routeText) }, [routeText])
+
+      function execute(key, value) {
+        if (busyState[0] || typeof props.runCommand !== 'function') return
+        busyState[1](true)
+        errorState[1]('')
+        var line = '/lang update ' + card.settingsId + ' ' + key + ' ' + encodeURIComponent(value)
+        Promise.resolve(props.runCommand(line)).then(function (result) {
+          if (result && result.ok === false) errorState[1](result.error && result.error.message || 'Command failed')
+        }).catch(function (error) {
+          errorState[1](error && error.message || String(error))
+        }).finally(function () { busyState[1](false) })
+      }
+
+      function choiceRow(label, detail, values, current, key) {
+        return h('div', { style: ROW },
+          h('strong', null, label),
+          h('div', { style: MUTED }, detail),
+          h('div', { style: Object.assign({}, BUTTONS, { marginTop: 6 }) },
+            values.map(function (value) {
+              return h(Pill, {
+                key: value,
+                active: current === value,
+                disabled: busyState[0],
+                onClick: function () { if (current !== value) execute(key, value) },
+              }, value)
+            })))
+      }
+
+      function inputRow(label, detail, valueState, key, placeholder) {
+        return h('div', { style: ROW },
+          h('strong', null, label),
+          h('div', { style: MUTED }, detail),
+          h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 6, marginTop: 7 } },
+            h(Input, {
+              value: valueState[0],
+              placeholder: placeholder,
+              disabled: busyState[0],
+              onChange: function (event) { valueState[1](event.target.value) },
+              onKeyDown: function (event) {
+                if (event.key === 'Enter' && valueState[0].trim()) execute(key, valueState[0].trim())
+              },
+              style: { width: '100%' },
+            }),
+            h(Button, {
+              variant: 'outline', size: 'sm', disabled: busyState[0] || !valueState[0].trim(),
+              onClick: function () { execute(key, valueState[0].trim()) },
+            }, '保存')))
+      }
+
+      return h('section', { style: CARD, className: 'dsh-language-tutor-settings' },
+        h('div', { style: TITLE },
+          h('span', null, '🌐 语言学习设置'),
+          h(Pill, null, card.learning + ' → ' + card.native)),
+        card.message ? h('div', {
+          style: { color: 'var(--dsw-alias-fg-success, #16865b)', marginBottom: 6 },
+        }, card.message) : null,
+        choiceRow('写作检查', '检查学习语言中的错误；context 会参考最近对话。', ['off', 'on', 'context'], card.check, 'check'),
+        choiceRow('母语教学', '用母语提问时，给出学习语言表达和词汇。', ['off', 'on'], card.tutor ? 'on' : 'off', 'tutor'),
+        choiceRow('自动翻译', '自动为较长的助手回答生成双语卡。', ['off', 'on'], card.auto ? 'on' : 'off', 'auto'),
+        choiceRow('翻译上下文', '翻译时带上最近一小段对话。', ['off', 'on'], card.context ? 'on' : 'off', 'context'),
+        inputRow('学习语言', '例如 en、fr、ja。', learningState, 'learning', 'en'),
+        inputRow('母语', '用于讲解和翻译，例如 zh-CN。', nativeState, 'native', 'zh-CN'),
+        h('div', { style: ROW },
+          h('strong', null, '辅助模型'),
+          h('div', { style: MUTED }, routeText ? '当前使用 ' + routeText : '当前跟随会话模型。'),
+          h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto auto', gap: 6, marginTop: 7 } },
+            h(Input, {
+              value: modelState[0],
+              placeholder: 'provider/model',
+              disabled: busyState[0],
+              onChange: function (event) { modelState[1](event.target.value) },
+              onKeyDown: function (event) {
+                if (event.key === 'Enter' && modelState[0].trim()) execute('model', modelState[0].trim())
+              },
+              style: { width: '100%' },
+            }),
+            h(Button, {
+              variant: 'outline', size: 'sm', disabled: busyState[0] || !modelState[0].trim(),
+              onClick: function () { execute('model', modelState[0].trim()) },
+            }, '保存'),
+            h(Button, {
+              variant: 'outline', size: 'sm', disabled: busyState[0] || !routeText,
+              onClick: function () { execute('model', 'default') },
+            }, '跟随会话'))),
+        errorState[0] ? h('div', { style: { color: 'var(--dsw-alias-fg-danger, #c0392b)', marginTop: 6 } }, errorState[0]) : null)
+    }
+
     function FlashcardView(props) {
       var card = props.node.data
       var busyState = React.useState(false)
@@ -314,6 +415,7 @@ window.__ModuleLoader__.load({
       if (kind === 'review') return h(ReviewCard, props)
       if (kind === 'translation') return h(TranslationCard, props)
       if (kind === 'flashcard') return h(FlashcardView, props)
+      if (kind === 'settings') return h(LanguageSettingsView, props)
       return null
     }
 

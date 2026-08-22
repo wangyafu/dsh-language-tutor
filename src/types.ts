@@ -105,7 +105,20 @@ export interface FlashcardCard {
   readonly newPerDay?: number
 }
 
-export type LanguageTutorCard = ReviewCard | TranslationCard | FlashcardCard
+export interface LanguageSettingsCard {
+  readonly kind: 'settings'
+  readonly settingsId: string
+  readonly learning: string
+  readonly native: string
+  readonly check: CheckMode
+  readonly tutor: boolean
+  readonly auto: boolean
+  readonly context: boolean
+  readonly route?: ModelRoute
+  readonly message?: string
+}
+
+export type LanguageTutorCard = ReviewCard | TranslationCard | FlashcardCard | LanguageSettingsCard
 
 export interface LanguageTutorEventData {
   readonly cardId: string

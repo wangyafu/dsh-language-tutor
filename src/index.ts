@@ -42,6 +42,7 @@ import {
   type FlashcardEntry,
   type FlashcardLibraryItem,
   type LanguageTutorCard,
+  type LanguageSettingsCard,
   type ModelRoute,
   type TranslationCard,
   type TutorSettings,
@@ -858,48 +859,89 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     name: 'lang',
     description: 'Show or change language-tutor settings',
     input: { hint: '[check|tutor|auto|native|learning|model|context] [value]' },
-    handler: ({ rawInput }): CommandResult => {
+    handler: ({ agent, rawInput }): CommandResult => {
+      const appendSettings = (
+        settingsId: string,
+        role: 'start' | 'update',
+        message?: string,
+      ): CommandResult => {
+        const current = settings.get()
+        const card: LanguageSettingsCard = {
+          kind: 'settings',
+          settingsId,
+          learning: current.learning,
+          native: current.native,
+          check: current.check,
+          tutor: current.tutor,
+          auto: current.auto,
+          context: current.context,
+          ...current.route === undefined ? {} : { route: current.route },
+          ...message === undefined ? {} : { message },
+        }
+        const sourceEventSeq = appendCard(agent.session, settingsId, role, card)
+        return { kind: 'success', text: settingsText(current), sourceEventSeq }
+      }
+
+      const updateSetting = (key: string, value: string): string | undefined => {
+        if (key === 'check') {
+          if (value !== 'off' && value !== 'on' && value !== 'context') return 'check must be off, on, or context.'
+          if (value === 'off') {
+            for (const controller of reviewControllers.values()) controller.abort(new Error('writing check disabled'))
+            reviewControllers.clear()
+          }
+          settings.update({ check: value })
+          return undefined
+        }
+        if (key === 'tutor' || key === 'auto' || key === 'context') {
+          const enabled = boolValue(value)
+          if (enabled === undefined) return `${key} must be on or off.`
+          settings.update({ [key]: enabled })
+          return undefined
+        }
+        if (key === 'native' || key === 'learning') {
+          if (value.length === 0) return `${key} needs a language code, for example zh-CN or en.`
+          settings.update({ [key]: value })
+          return undefined
+        }
+        if (key === 'model') {
+          if (value === 'default') {
+            settings.update({ route: undefined })
+            return undefined
+          }
+          const route = parseModelRoute(value)
+          if (route === undefined) return 'Use /lang model <provider/model>, or /lang model default.'
+          settings.update({ route })
+          return undefined
+        }
+        return `Unknown setting "${key}". Run /lang to see the available settings.`
+      }
+
       const input = rawInput.trim()
-      if (input.length === 0) return { kind: 'success', text: settingsText(settings.get()) }
+      if (input.length === 0) {
+        return appendSettings(`lang:settings:${crypto.randomUUID()}`, 'start')
+      }
       const [key = '', ...rest] = input.split(/\s+/u)
       const value = rest.join(' ').trim()
+      if (key === 'update') {
+        const [settingsId, settingKey, encodedValue] = rest
+        if (settingsId === undefined || !settingsId.startsWith('lang:settings:') || !hasCard(agent.session, settingsId)
+          || settingKey === undefined || encodedValue === undefined) {
+          return resultError('This language settings card is no longer active.')
+        }
+        const decodedValue = decodeCommandValue(encodedValue)
+        if (decodedValue === undefined) return resultError('The setting value could not be decoded.')
+        const error = updateSetting(settingKey, decodedValue.trim())
+        if (error !== undefined) return resultError(error)
+        return appendSettings(settingsId, 'update', '设置已保存。')
+      }
       if (key === 'on' || key === 'off') {
-        settings.update({ check: key === 'on' ? 'on' : 'off' })
-        return { kind: 'success', text: settingsText(settings.get()) }
+        const error = updateSetting('check', key)
+        if (error !== undefined) return resultError(error)
+        return appendSettings(`lang:settings:${crypto.randomUUID()}`, 'start', '设置已保存。')
       }
-      if (key === 'check') {
-        if (value !== 'off' && value !== 'on' && value !== 'context') {
-          return resultError('check must be off, on, or context.')
-        }
-        if (value === 'off') {
-          for (const controller of reviewControllers.values()) controller.abort(new Error('writing check disabled'))
-          reviewControllers.clear()
-        }
-        settings.update({ check: value })
-        return { kind: 'success', text: settingsText(settings.get()) }
-      }
-      if (key === 'tutor' || key === 'auto' || key === 'context') {
-        const enabled = boolValue(value)
-        if (enabled === undefined) return resultError(`${key} must be on or off.`)
-        settings.update({ [key]: enabled })
-        return { kind: 'success', text: settingsText(settings.get()) }
-      }
-      if (key === 'native' || key === 'learning') {
-        if (value.length === 0) return resultError(`${key} needs a language code, for example zh-CN or en.`)
-        settings.update({ [key]: value })
-        return { kind: 'success', text: settingsText(settings.get()) }
-      }
-      if (key === 'model') {
-        if (value === 'default') {
-          settings.update({ route: undefined })
-          return { kind: 'success', text: settingsText(settings.get()) }
-        }
-        const route = parseModelRoute(value)
-        if (route === undefined) return resultError('Use /lang model <provider/model>, or /lang model default.')
-        settings.update({ route })
-        return { kind: 'success', text: settingsText(settings.get()) }
-      }
-      return resultError(`Unknown setting "${key}". Run /lang to see the available settings.`)
+      const error = updateSetting(key, value)
+      if (error !== undefined) return resultError(error)
+      return appendSettings(`lang:settings:${crypto.randomUUID()}`, 'start', '设置已保存。')
     },
   })
 }

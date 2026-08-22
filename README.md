@@ -14,6 +14,7 @@
 - 运行 `/flashcards` 复习单词。调度使用 FSRS，评分分为 Again、Hard、Good、Easy。
 - 用 `/flashcards library` 打开词卡库，可分页查看、编辑或删除已经保存的词卡。
 - 用 `/flashcards settings` 调整每轮卡片数和每日新卡数，不必改配置文件。
+- 运行 `/lang` 打开设置卡，直接切换检查、教学、翻译、语言和辅助模型。
 - 可自动翻译较长的最终回答，也可为检查或翻译附带一小段最近的会话上下文。
 
 Web 卡片直接使用 DSH 的按钮、Markdown 渲染器、颜色变量和会话槽位。插件只补了卡片排版，没有另做一套主题。
@@ -54,7 +55,7 @@ dsh --profile web
 ```sh
 cd dsh-language-tutor
 npm pack
-dsh plugin --profile web add ./dsh-language-tutor-0.2.0.tgz
+dsh plugin --profile web add ./dsh-language-tutor-0.3.0.tgz
 ```
 
 也可以直接从 GitHub 安装：
@@ -73,7 +74,7 @@ dsh plugin --profile web remove dsh-language-tutor
 
 ## 开始使用
 
-默认学习英语，母语为简体中文。装好后先试这几步：
+默认学习英语，母语为简体中文。装好后可先运行 `/lang` 看一眼设置卡，再试这几步：
 
 1. 用英语向 Agent 提一个完整问题。Agent 会正常回答，写作卡片稍后出现在会话里。
 2. 换成中文问同样的问题。插件会给出自然的英文整句、重点词汇和相关语法。
@@ -97,7 +98,7 @@ dsh plugin --profile web remove dsh-language-tutor
 
 | 命令 | 用途 |
 | --- | --- |
-| `/lang` | 查看当前设置和用法 |
+| `/lang` | 打开交互式设置卡；Headless 模式会显示同样设置的文本版 |
 | `/lang check off\|on\|context` | 关闭检查、普通检查，或带最近会话片段检查 |
 | `/lang tutor on\|off` | 开关母语到学习语言的教学模式 |
 | `/lang auto on\|off` | 开关自动翻译 |
@@ -120,7 +121,7 @@ dsh plugin --profile web remove dsh-language-tutor
 
 ## 配置
 
-大多数设置直接用 `/lang` 修改即可。它们保存在：
+大多数设置可以在 `/lang` 卡片里直接修改，也保留了上表中的命令写法。它们保存在：
 
 ```text
 $DSH_HOME/state/dsh-language-tutor/settings.json
