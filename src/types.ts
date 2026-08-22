@@ -68,7 +68,10 @@ export interface ReviewCard {
 
 export interface TranslationCard {
   readonly kind: 'translation'
+  readonly learning: string
   readonly native: string
+  readonly source?: string
+  readonly target?: string
   readonly status?: 'loading' | 'done' | 'error'
   readonly segments?: readonly TranslationSegment[]
   readonly text?: string

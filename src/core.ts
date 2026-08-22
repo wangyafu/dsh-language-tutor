@@ -16,6 +16,21 @@ export const SHORT_CODE_LINES = 5
 export const MIN_AUTO_UNITS = 15
 export const TRANSLATION_BATCH_CHARS = 3_500
 
+export interface TranslationDirection {
+  readonly source: string
+  readonly target: string
+}
+
+export interface SegmentTranslationResult {
+  readonly direction: TranslationDirection
+  readonly translations: readonly string[]
+}
+
+export interface WholeTranslationResult {
+  readonly direction: TranslationDirection
+  readonly translation: string
+}
+
 export const DEFAULT_SETTINGS: TutorSettings = Object.freeze({
   learning: 'en',
   native: 'zh-CN',
@@ -288,37 +303,120 @@ export function buildSegmentTranslationPrompt(
   prose: readonly string[],
   settings: TutorSettings,
   context?: string | true,
+  direction?: TranslationDirection,
+  languageSample?: string,
 ): string {
+  const directionInstructions = direction === undefined
+    ? [
+        `Determine whether the response is predominantly ${settings.native}, predominantly ${settings.learning}, or another language.`,
+        `If it is predominantly ${settings.native}, translate it into ${settings.learning}.`,
+        `If it is predominantly ${settings.learning}, translate it into ${settings.native}.`,
+        `If it is another language or uncertain, translate it into ${settings.native}.`,
+        `Set "sourceLanguage" to exactly "${settings.native}", "${settings.learning}", or "other". Set "targetLanguage" to exactly "${settings.native}" or "${settings.learning}".`,
+      ]
+    : [
+        `The response direction is already fixed as ${direction.source} to ${direction.target}. Translate every segment into ${direction.target}.`,
+        `Set "sourceLanguage" to "${direction.source}" and "targetLanguage" to "${direction.target}".`,
+      ]
   return [
     ...contextSection(context),
-    `Translate every numbered segment into ${settings.native}.`,
+    ...directionInstructions,
     'Keep inline code, paths, commands, identifiers, and technical names unchanged. Preserve Markdown inside each segment.',
-    `Return JSON only in this shape: {"translations":[${prose.map(() => '"..."').join(',')}]}`,
+    `Return JSON only in this shape: {"sourceLanguage":"...","targetLanguage":"...","translations":[${prose.map(() => '"..."').join(',')}]}`,
     `The array must contain exactly ${prose.length} strings in the same order.`,
+    ...(direction === undefined && languageSample !== undefined
+      ? ['', '<language-sample>', languageSample.slice(0, 2_000), '</language-sample>']
+      : []),
     '',
     ...prose.map((text, index) => `[${index}]\n${text}`),
   ].join('\n\n')
 }
 
-export function parseSegmentTranslations(raw: string, count: number): string[] | undefined {
-  const values = extractJsonObject(raw)?.translations
+function parseTranslationDirection(
+  value: Record<string, unknown>,
+  settings: TutorSettings,
+  fixed?: TranslationDirection,
+): TranslationDirection | undefined {
+  const rawSource = nonEmptyString(value.sourceLanguage)
+  const rawTarget = nonEmptyString(value.targetLanguage)
+  const source = rawSource?.toLocaleLowerCase() === settings.native.toLocaleLowerCase()
+    ? settings.native
+    : rawSource?.toLocaleLowerCase() === settings.learning.toLocaleLowerCase()
+      ? settings.learning
+      : rawSource === 'other'
+        ? 'other'
+        : undefined
+  const target = rawTarget?.toLocaleLowerCase() === settings.native.toLocaleLowerCase()
+    ? settings.native
+    : rawTarget?.toLocaleLowerCase() === settings.learning.toLocaleLowerCase()
+      ? settings.learning
+      : undefined
+  if (source === undefined || target === undefined) return undefined
+  if (fixed !== undefined) {
+    return source === fixed.source && target === fixed.target ? fixed : undefined
+  }
+  const expectedTarget = source === settings.native ? settings.learning : settings.native
+  return target === expectedTarget ? { source, target } : undefined
+}
+
+export function parseSegmentTranslationResult(
+  raw: string,
+  count: number,
+  settings: TutorSettings,
+  fixed?: TranslationDirection,
+): SegmentTranslationResult | undefined {
+  const value = extractJsonObject(raw)
+  if (value === undefined) return undefined
+  const values = value.translations
   if (!Array.isArray(values) || values.length !== count || !values.every(value => typeof value === 'string')) {
     return undefined
   }
-  return values.map(value => (value as string).trim())
+  const direction = parseTranslationDirection(value, settings, fixed)
+  return direction === undefined ? undefined : {
+    direction,
+    translations: values.map(value => (value as string).trim()),
+  }
 }
 
-export function buildWholeTranslationPrompt(source: string, settings: TutorSettings, context?: string | true): string {
+export function buildWholeTranslationPrompt(
+  source: string,
+  settings: TutorSettings,
+  context?: string | true,
+  direction?: TranslationDirection,
+): string {
+  const directionInstructions = direction === undefined
+    ? [
+        `If the response is predominantly ${settings.native}, translate it into ${settings.learning}.`,
+        `If it is predominantly ${settings.learning}, translate it into ${settings.native}.`,
+        `If it is another language or uncertain, translate it into ${settings.native}.`,
+        `Set "sourceLanguage" to exactly "${settings.native}", "${settings.learning}", or "other". Set "targetLanguage" to exactly "${settings.native}" or "${settings.learning}".`,
+      ]
+    : [
+        `Translate the response from ${direction.source} into ${direction.target}.`,
+        `Set "sourceLanguage" to "${direction.source}" and "targetLanguage" to "${direction.target}".`,
+      ]
   return [
     ...contextSection(context),
-    `Translate the assistant response below into ${settings.native}.`,
+    ...directionInstructions,
     'Keep code blocks, inline code, paths, commands, and technical identifiers unchanged. Preserve Markdown.',
-    'Return only the translation.',
+    'Return one JSON object only in this shape: {"sourceLanguage":"...","targetLanguage":"...","translation":"..."}',
     '',
     '<response>',
     source.slice(0, MAX_TRANSLATE_CHARS),
     '</response>',
   ].join('\n')
+}
+
+export function parseWholeTranslationResult(
+  raw: string,
+  settings: TutorSettings,
+  fixed?: TranslationDirection,
+): WholeTranslationResult | undefined {
+  const value = extractJsonObject(raw)
+  if (value === undefined) return undefined
+  const direction = parseTranslationDirection(value, settings, fixed)
+  const translation = nonEmptyString(value.translation)
+  return direction === undefined || translation === undefined ? undefined : { direction, translation }
 }
 
 export function assembleTranslationSegments(

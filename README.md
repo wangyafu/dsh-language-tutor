@@ -10,7 +10,7 @@
 
 - 用学习语言提问时，检查拼写和语法，并给出更自然的表达。
 - 用母语提问时，教你怎样用学习语言表达同一个意思；重点词汇会自动加入单词卡。
-- 点击回答下方的 `🌐`，或运行 `/translate`，生成原文和译文交替出现的双语卡片。
+- 点击回答下方的 `🌐`，或运行 `/translate`，在母语和学习语言之间双向转换，生成原文与译文交替出现的对照卡片。
 - 运行 `/flashcards` 复习单词。调度使用 FSRS，评分分为 Again、Hard、Good、Easy。
 - 用 `/flashcards library` 打开词卡库，可分页查看、编辑或删除已经保存的词卡。
 - 用 `/flashcards settings` 调整每轮卡片数和每日新卡数，不必改配置文件。
@@ -55,7 +55,7 @@ dsh --profile web
 ```sh
 cd dsh-language-tutor
 npm pack
-dsh plugin --profile web add ./dsh-language-tutor-0.4.0.tgz
+dsh plugin --profile web add ./dsh-language-tutor-0.5.0.tgz
 ```
 
 也可以直接从 GitHub 安装：
@@ -107,7 +107,7 @@ dsh plugin --profile web remove dsh-language-tutor
 | `/lang model <provider/model>` | 指定辅助请求使用的 DSH 模型路由 |
 | `/lang model default` | 重新跟随当前会话模型 |
 | `/lang context on\|off` | 开关翻译时的完整会话上下文和提示缓存复用 |
-| `/translate` | 翻译最后一条助手回答 |
+| `/translate` | 在母语和学习语言之间转换最后一条助手回答 |
 | `/flashcards` | 开始一轮到期卡片复习 |
 | `/flashcards library [page]` | 打开词卡库，可分页、编辑和删除 |
 | `/flashcards settings` | 用卡片调整每轮上限和每日新卡数 |
@@ -162,6 +162,7 @@ $DSH_HOME/state/dsh-language-tutor/settings.json
 - 少于 4 个有效文字单位、命令、代码围栏、符号过多或明显像代码的输入不会触发检查。
 - 一次写作检查最多处理 1500 个字符，最多返回 5 个错误、5 个词汇和 3 个语法点。
 - 自动翻译只处理至少 15 个文字单位且不含工具调用的最终回答。
+- 回答主要使用母语时，翻译目标是学习语言；主要使用学习语言时，目标是母语。混合内容按主要语言判断，其他语言或无法确定时默认翻译成母语。卡片会显示实际方向，例如 `zh-CN → en`。
 - 翻译最多读取 12000 个字符，并把长段落拆分成约 3500 字符的批次。遇到输出截断时会继续拆小重试；带上下文翻译失败后会自动退回无上下文模式。
 - 5 行以内的代码块在双语卡片里原样显示，更长的代码块折叠为行数提示。
 - `check context` 和 `context on` 会重放 DSH 最近一次 Agent 请求的系统提示、消息历史和工具定义，再追加本次检查或翻译指令。路由不变时，服务商可以复用同一会话的提示缓存。

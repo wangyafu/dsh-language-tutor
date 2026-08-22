@@ -4,11 +4,13 @@ import {
   assembleTranslationSegments,
   batchTranslationTexts,
   buildReviewPrompt,
+  buildSegmentTranslationPrompt,
   contentUnits,
   normalizeSettings,
   parseModelRoute,
   parseReviewResult,
-  parseSegmentTranslations,
+  parseSegmentTranslationResult,
+  parseWholeTranslationResult,
   segmentMarkdown,
   shouldSkipCheck,
   splitTranslationText,
@@ -77,6 +79,17 @@ describe('review response parsing', () => {
 })
 
 describe('bilingual segments', () => {
+  it('asks the model to choose the opposite configured language', () => {
+    const prompt = buildSegmentTranslationPrompt(
+      ['这是一个中文回答。'],
+      normalizeSettings({ learning: 'en', native: 'zh-CN' }),
+    )
+    assert.match(prompt, /predominantly zh-CN/u)
+    assert.match(prompt, /translate it into en/u)
+    assert.match(prompt, /predominantly en/u)
+    assert.match(prompt, /translate it into zh-CN/u)
+  })
+
   it('splits long prose near readable boundaries and packs bounded batches', () => {
     const source = Array.from({ length: 12 }, (_, index) =>
       `Sentence ${index + 1} explains one useful part of the translation batching behavior.`).join(' ')
@@ -117,8 +130,35 @@ describe('bilingual segments', () => {
     ])
   })
 
-  it('requires exact translation alignment', () => {
-    assert.deepEqual(parseSegmentTranslations('{"translations":["一","二"]}', 2), ['一', '二'])
-    assert.equal(parseSegmentTranslations('{"translations":["一"]}', 2), undefined)
+  it('switches native-language responses into the learning language', () => {
+    const settings = normalizeSettings({ learning: 'en', native: 'zh-CN' })
+    assert.deepEqual(parseSegmentTranslationResult(
+      '{"sourceLanguage":"zh-CN","targetLanguage":"en","translations":["one","two"]}',
+      2,
+      settings,
+    ), {
+      direction: { source: 'zh-CN', target: 'en' },
+      translations: ['one', 'two'],
+    })
+    assert.equal(parseSegmentTranslationResult(
+      '{"sourceLanguage":"zh-CN","targetLanguage":"en","translations":["one"]}',
+      2,
+      settings,
+    ), undefined)
+  })
+
+  it('switches learning-language responses into the native language', () => {
+    const settings = normalizeSettings({ learning: 'en', native: 'zh-CN' })
+    assert.deepEqual(parseWholeTranslationResult(
+      '{"sourceLanguage":"en","targetLanguage":"zh-CN","translation":"你好"}',
+      settings,
+    ), {
+      direction: { source: 'en', target: 'zh-CN' },
+      translation: '你好',
+    })
+    assert.equal(parseWholeTranslationResult(
+      '{"sourceLanguage":"en","targetLanguage":"en","translation":"hello"}',
+      settings,
+    ), undefined)
   })
 })

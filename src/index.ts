@@ -21,11 +21,13 @@ import {
   normalizeSettings,
   parseModelRoute,
   parseReviewResult,
-  parseSegmentTranslations,
+  parseSegmentTranslationResult,
+  parseWholeTranslationResult,
   segmentMarkdown,
   shouldSkipCheck,
   splitTranslationText,
   TRANSLATION_BATCH_CHARS,
+  type TranslationDirection,
 } from './core.js'
 import { AuxiliaryLlmError, runAuxiliaryLlm, type AuxiliaryLlmFork } from './llm.js'
 import {
@@ -494,87 +496,113 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     if (route === undefined) throw new Error('no model route is available; set one with /lang model <provider/model>')
     const clipped = source.text.slice(0, MAX_TRANSLATE_CHARS)
     const cardId = `translation:${message.id}:${crypto.randomUUID()}`
-    appendCard(session, cardId, 'start', { kind: 'translation', native: current.native, status: 'loading' })
+    appendCard(session, cardId, 'start', {
+      kind: 'translation',
+      learning: current.learning,
+      native: current.native,
+      status: 'loading',
+    })
 
-    const translateTexts = async (
-      texts: readonly string[],
-      context?: string | true,
-      fork?: AuxiliaryLlmFork,
-    ): Promise<string[]> => {
-      const budget = translationTokenBudget(texts, config.translationMaxOutputTokens)
-      let hitOutputLimit = false
-      try {
+    const attempt = async (context?: string | true, fork?: AuxiliaryLlmFork): Promise<TranslationCard> => {
+      let direction: TranslationDirection | undefined
+
+      const translateWhole = async (text: string): Promise<string> => {
         const raw = await llmText(
           route,
-          buildSegmentTranslationPrompt(texts, current, context),
-          session.id,
-          budget,
-          signal,
-          fork,
-        )
-        const values = parseSegmentTranslations(raw, texts.length)
-        if (values !== undefined) return values
-      } catch (error) {
-        if (!(error instanceof AuxiliaryLlmError) || error.code !== 'MAX_TOKENS') throw error
-        hitOutputLimit = true
-      }
-
-      if (texts.length > 1) {
-        const middle = Math.ceil(texts.length / 2)
-        const left = await translateTexts(texts.slice(0, middle), context, fork)
-        const right = await translateTexts(texts.slice(middle), context, fork)
-        return [...left, ...right]
-      }
-
-      const text = texts[0] ?? ''
-      if (hitOutputLimit && text.length > 400) {
-        const parts = splitTranslationText(text, Math.max(200, Math.ceil(text.length / 2)))
-        if (parts.length > 1) return [(await translateTexts(parts, context, fork)).join('\n\n')]
-      }
-
-      try {
-        return [await llmText(
-          route,
-          buildWholeTranslationPrompt(text, current, context),
+          buildWholeTranslationPrompt(text, current, context, direction),
           session.id,
           translationTokenBudget([text], config.translationMaxOutputTokens),
           signal,
           fork,
-        )]
-      } catch (error) {
-        if (!(error instanceof AuxiliaryLlmError) || error.code !== 'MAX_TOKENS' || text.length <= 400) throw error
-        const parts = splitTranslationText(text, Math.max(200, Math.ceil(text.length / 2)))
-        if (parts.length <= 1) throw error
-        return [(await translateTexts(parts, context, fork)).join('\n\n')]
+        )
+        const parsed = parseWholeTranslationResult(raw, current, direction)
+        if (parsed === undefined) {
+          throw new AuxiliaryLlmError('auxiliary model returned invalid translation JSON', 'INVALID_RESPONSE')
+        }
+        direction ??= parsed.direction
+        return parsed.translation
       }
-    }
 
-    const attempt = async (context?: string | true, fork?: AuxiliaryLlmFork): Promise<TranslationCard> => {
+      const translateTexts = async (texts: readonly string[]): Promise<string[]> => {
+        const budget = translationTokenBudget(texts, config.translationMaxOutputTokens)
+        let hitOutputLimit = false
+        try {
+          const raw = await llmText(
+            route,
+            buildSegmentTranslationPrompt(texts, current, context, direction, clipped),
+            session.id,
+            budget,
+            signal,
+            fork,
+          )
+          const parsed = parseSegmentTranslationResult(raw, texts.length, current, direction)
+          if (parsed !== undefined) {
+            direction ??= parsed.direction
+            return [...parsed.translations]
+          }
+        } catch (error) {
+          if (!(error instanceof AuxiliaryLlmError) || error.code !== 'MAX_TOKENS') throw error
+          hitOutputLimit = true
+        }
+
+        if (texts.length > 1) {
+          const middle = Math.ceil(texts.length / 2)
+          const left = await translateTexts(texts.slice(0, middle))
+          const right = await translateTexts(texts.slice(middle))
+          return [...left, ...right]
+        }
+
+        const text = texts[0] ?? ''
+        if (hitOutputLimit && text.length > 400) {
+          const parts = splitTranslationText(text, Math.max(200, Math.ceil(text.length / 2)))
+          if (parts.length > 1) return [(await translateTexts(parts)).join('\n\n')]
+        }
+
+        try {
+          return [await translateWhole(text)]
+        } catch (error) {
+          if (!(error instanceof AuxiliaryLlmError) || error.code !== 'MAX_TOKENS' || text.length <= 400) throw error
+          const parts = splitTranslationText(text, Math.max(200, Math.ceil(text.length / 2)))
+          if (parts.length <= 1) throw error
+          return [(await translateTexts(parts)).join('\n\n')]
+        }
+      }
+
       const markdown = segmentMarkdown(clipped)
       const prose = markdown.flatMap(segment => segment.kind === 'prose' ? [segment.text] : [])
       if (prose.length > 0) {
         const pieces = translationPieces(prose)
         const translatedPieces: string[] = []
         for (const batch of translationBatches(pieces)) {
-          translatedPieces.push(...await translateTexts(batch.map(piece => piece.text), context, fork))
+          translatedPieces.push(...await translateTexts(batch.map(piece => piece.text)))
         }
         const bySegment = Array.from({ length: prose.length }, () => [] as string[])
         pieces.forEach((piece, index) => bySegment[piece.segmentIndex]?.push(translatedPieces[index] ?? ''))
         const translations = bySegment.map(parts => parts.join('\n\n'))
         const segments = assembleTranslationSegments(markdown, translations)
-        if (segments !== undefined) {
-          return { kind: 'translation', native: current.native, status: 'done', segments }
+        if (segments !== undefined && direction !== undefined) {
+          return {
+            kind: 'translation',
+            learning: current.learning,
+            native: current.native,
+            source: direction.source,
+            target: direction.target,
+            status: 'done',
+            segments,
+          }
         }
       }
-      const text = await llmText(
-        route,
-        buildWholeTranslationPrompt(clipped, current, context),
-        session.id,
-        config.translationMaxOutputTokens,
-        signal,
-        fork,
-      )
-      return { kind: 'translation', native: current.native, status: 'done', text }
+      const text = await translateWhole(clipped)
+      if (direction === undefined) throw new AuxiliaryLlmError('translation direction was not resolved', 'INVALID_RESPONSE')
+      return {
+        kind: 'translation',
+        learning: current.learning,
+        native: current.native,
+        source: direction.source,
+        target: direction.target,
+        status: 'done',
+        text,
+      }
     }
 
     try {
@@ -594,6 +622,7 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     } catch (error) {
       appendCard(session, cardId, 'update', {
         kind: 'translation',
+        learning: current.learning,
         native: current.native,
         status: 'error',
         error: safeError(error),
@@ -618,7 +647,7 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
 
   ctx.commands.register({
     name: 'translate',
-    description: 'Translate the latest assistant response into your native language',
+    description: 'Switch the latest assistant response between your native and learning languages',
     input: { hint: '[assistant-message-id]' },
     handler: async ({ agent, rawInput, signal }): Promise<CommandResult> => {
       const messageId = rawInput.trim()

@@ -104,18 +104,21 @@ window.__ModuleLoader__.load({
     function TranslationCard(props) {
       var card = props.node.data
       var segments = Array.isArray(card.segments) ? card.segments : null
+      var direction = card.source && card.target
+        ? card.source + ' → ' + card.target
+        : (card.learning || '?') + ' ↔ ' + (card.native || '?')
       if (card.status === 'loading') {
         return h('section', { style: CARD, className: 'dsh-language-tutor-translation' },
-          h('div', { style: TITLE }, h('span', null, '🌐 Translating…'), h(Pill, null, card.native)),
-          h('div', { style: MUTED }, 'Preparing a bilingual version of this response.'))
+          h('div', { style: TITLE }, h('span', null, '🌐 Detecting and translating…'), h(Pill, null, direction)),
+          h('div', { style: MUTED }, 'Switching this response into the other configured language.'))
       }
       if (card.status === 'error') {
         return h('section', { style: CARD, className: 'dsh-language-tutor-translation' },
-          h('div', { style: TITLE }, h('span', null, '🌐 Translation failed'), h(Pill, null, card.native)),
+          h('div', { style: TITLE }, h('span', null, '🌐 Translation failed'), h(Pill, null, direction)),
           h('div', { style: { color: 'var(--dsw-alias-fg-danger, #c0392b)' } }, card.error || 'The auxiliary model request failed.'))
       }
       return h('section', { style: CARD, className: 'dsh-language-tutor-translation' },
-        h('div', { style: TITLE }, h('span', null, '🌐 Bilingual translation'), h(Pill, null, card.native)),
+        h('div', { style: TITLE }, h('span', null, '🌐 Language switch'), h(Pill, null, direction)),
         segments
           ? segments.map(function (segment, index) {
               if (segment.kind === 'pair') {
